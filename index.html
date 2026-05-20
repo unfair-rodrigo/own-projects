@@ -318,7 +318,7 @@
       };
 
       // ── TODAY TAB ─────────────────────────────────────────────────────────────
-      const TodayTab = () => (
+      const renderTodayTab = () => (
         <div>
           {/* Objective */}
           <div style={{ ...cardStyle, borderLeft:`2px solid ${C.accent}` }}>
@@ -474,7 +474,7 @@
       );
 
       // ── TASKS TAB ─────────────────────────────────────────────────────────────
-      const TasksTab = () => {
+      const renderTasksTab = () => {
         const allClientDone = state.clients.every(c => (state.clientTasks[c.id]||[]).filter(t=>!t.done).length === 0);
         const allPersonalDone = state.personalTasks.filter(t=>!t.done).length === 0;
         const totalTasks = state.clients.reduce((s,c)=>s+(state.clientTasks[c.id]||[]).length, 0) + state.personalTasks.length;
@@ -591,7 +591,7 @@
       };
 
       // ── PROGRESS TAB ──────────────────────────────────────────────────────────
-      const ProgressTab = () => {
+      const renderProgressTab = () => {
         const dayLabels = ["Do","Lu","Ma","Mi","Ju","Vi","Sá"];
         return (
           <div>
@@ -683,7 +683,7 @@
       };
 
       // ── SETTINGS TAB ──────────────────────────────────────────────────────────
-      const SettingsTab = () => (
+      const renderSettingsTab = () => (
         <div>
           <div style={cardStyle}>
             <span style={labelStyle}>◆ Hábitos activos</span>
@@ -741,10 +741,10 @@
               ))}
             </div>
 
-            {tab==="today" && <TodayTab />}
-            {tab==="tasks" && <TasksTab />}
-            {tab==="progress" && <ProgressTab />}
-            {tab==="settings" && <SettingsTab />}
+            {tab==="today" && renderTodayTab()}
+            {tab==="tasks" && renderTasksTab()}
+            {tab==="progress" && renderProgressTab()}
+            {tab==="settings" && renderSettingsTab()}
           </div>
         </div>
       );
