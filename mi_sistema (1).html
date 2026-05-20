@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mi Sistema</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: auto; }
+    body { background: #0d0d14; font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    textarea, input, button { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    textarea { box-sizing: border-box; width: 100%; }
+    input:focus, textarea:focus { outline: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useCallback, useRef, useEffect } = React;
+
+    // ─── STORAGE ────────────────────────────────────────────────────────────────
+    const STORAGE_KEY = "mi_sistema_v3";
+    const todayKey = () => new Date().toISOString().slice(0, 10);
+
+    const defaultState = () => ({
+      objective: "Leer 24 libros este año y aplicar lo aprendido",
+      micro: { label: "Conseguir clientes y generar $10,000", goal: 10000, earned: 3200 },
+      habits: [
+        { id: 1, name: "Ejercicio", icon: "⚡" },
+        { id: 2, name: "Meditación", icon: "🧘" },
+        { id: 3, name: "Lectura 30 min", icon: "📖" },
+        { id: 4, name: "Sin celular al despertar", icon: "📵" },
+        { id: 5, name: "Outreach / clientes", icon: "🎯" },
+        { id: 6, name: "Trabajo profundo", icon: "🔥" },
+        { id: 7, name: "Dormir antes de las 10pm", icon: "🌙" },
+      ],
+      // clients: array of { id, name, color }
+      clients: [
+        { id: "c1", name: "Julian Traumatología", color: "#f59e0b" },
+        { id: "c2", name: "Scan Medic", color: "#06b6d4" },
+      ],
+      // clientTasks: { clientId: [{ id, text, done, carry }] }
+      clientTasks: {},
+      // personalTasks: [{ id, text, done, carry }]
+      personalTasks: [],
+      dailyLogs: {},
+    });
+
+    function load() {
+      try {
+        const r = localStorage.getItem(STORAGE_KEY);
+        if (r) {
+          const parsed = JSON.parse(r);
+          const def = defaultState();
+          return {
+            ...def,
+            ...parsed,
+            clients: parsed.clients || def.clients,
+            clientTasks: parsed.clientTasks || {},
+            personalTasks: parsed.personalTasks || [],
+          };
+        }
+      } catch {}
+      return defaultState();
+    }
+    function save(s) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {} }
+
+    // ─── HELPERS ────────────────────────────────────────────────────────────────
+    function getLast7(logs, habitId) {
+      return Array.from({ length: 7 }, (_, i) => {
+        const d = new Date(); d.setDate(d.getDate() - (6 - i));
+        const k = d.toISOString().slice(0, 10);
+        const days = ["Do","Lu","Ma","Mi","Ju","Vi","Sá"];
+        return { key: k, done: logs[k]?.done?.includes(habitId) ?? false, label: days[d.getDay()], isToday: k === todayKey() };
+      });
+    }
+
+    function getStreak(logs, habitId) {
+      let count = 0;
+      for (let i = 0; i < 60; i++) {
+        const d = new Date(); d.setDate(d.getDate() - i);
+        const k = d.toISOString().slice(0, 10);
+        if (logs[k]?.done?.includes(habitId)) count++;
+        else if (i > 0) break;
+      }
+      return count;
+    }
+
+    // ─── RADAR CHART ─────────────────────────────────────────────────────────────
+    function RadarChart({ habits, logs }) {
+      const size = 240;
+      const cx = size / 2, cy = size / 2, r = 90;
+      const n = habits.length;
+      if (n < 3) return null;
+      const scores = habits.map(h => getLast7(logs, h.id).filter(d => d.done).length / 7);
+      const angle = i => (Math.PI * 2 * i) / n - Math.PI / 2;
+      const pt = (i, radius) => ({ x: cx + radius * Math.cos(angle(i)), y: cy + radius * Math.sin(angle(i)) });
+      const rings = [0.25, 0.5, 0.75, 1];
+      const dataPath = scores.map((s, i) => { const p = pt(i, s * r); return `${i===0?"M":"L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`; }).join(" ") + " Z";
+      const avgScore = scores.reduce((a,b) => a+b, 0) / n;
+      return (
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"center" }}>
+          <svg width={size} height={size} style={{ overflow:"visible" }}>
+            {rings.map((ring, ri) => {
+              const path = habits.map((_, i) => { const p = pt(i, ring*r); return `${i===0?"M":"L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`; }).join(" ") + " Z";
+              return <path key={ri} d={path} fill="none" stroke={ri===3?"#3a3a4a":"#2a2a3a"} strokeWidth={ri===3?1:0.5} />;
+            })}
+            {habits.map((_, i) => { const p = pt(i, r); return <line key={i} x1={cx} y1={cy} x2={p.x} y2={p.y} stroke="#3a3a4a" strokeWidth={0.5} />; })}
+            <path d={dataPath} fill="rgba(139,92,246,0.15)" stroke="#8b5cf6" strokeWidth={2} strokeLinejoin="round" />
+            {scores.map((s, i) => { const p = pt(i, s*r); return <circle key={i} cx={p.x} cy={p.y} r={4} fill="#8b5cf6" stroke="#1a1a2e" strokeWidth={2} />; })}
+            {habits.map((h, i) => { const p = pt(i, r+22); const anchor = p.x < cx-5 ? "end" : p.x > cx+5 ? "start" : "middle"; return <text key={i} x={p.x} y={p.y} textAnchor={anchor} dominantBaseline="middle" style={{ fontSize:10, fill:"#a0a0b0" }}>{h.icon}</text>; })}
+          </svg>
+          <div style={{ fontSize:12, color:"#8b5cf6", marginTop:-8 }}>{Math.round(avgScore*100)}% consistencia esta semana</div>
+        </div>
+      );
+    }
+
+    // ─── COLORS & STYLES ─────────────────────────────────────────────────────────
+    const C = {
+      bg: "#0d0d14", surface: "#13131f", surface2: "#1a1a2e",
+      border: "#2a2a3f", border2: "#3a3a5a",
+      text: "#e8e8f0", muted: "#7070a0",
+      accent: "#8b5cf6", accentDim: "rgba(139,92,246,0.15)", accentGlow: "rgba(139,92,246,0.3)",
+      green: "#22c55e", greenDim: "rgba(34,197,94,0.12)",
+      amber: "#f59e0b", red: "#ef4444", cyan: "#06b6d4",
+    };
+    const cardStyle = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 18px", marginBottom: 10 };
+    const labelStyle = { fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: C.muted, marginBottom: 10, display: "block" };
+    const inputStyle = { fontSize: 13, padding: "8px 11px", borderRadius: 8, border: `1px solid ${C.border2}`, background: C.surface2, color: C.text, width: "100%" };
+    const btnAccent = { padding: "7px 14px", borderRadius: 8, border: "none", background: C.accent, color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 500 };
+    const btnGhost = { padding: "7px 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, cursor: "pointer", fontSize: 13 };
+
+    // ─── HABIT INPUT (fix: no scroll jump) ───────────────────────────────────────
+    function HabitInput({ onAdd, onCancel }) {
+      const [val, setVal] = useState("");
+      const ref = useRef(null);
+      useEffect(() => {
+        if (ref.current) {
+          // Focus without scrolling
+          ref.current.focus({ preventScroll: true });
+        }
+      }, []);
+      const submit = () => {
+        if (!val.trim()) return;
+        onAdd(val.trim());
+        setVal("");
+      };
+      return (
+        <div style={{ display:"flex", gap:7, marginTop:10 }}>
+          <input
+            ref={ref}
+            value={val}
+            onChange={e => setVal(e.target.value)}
+            placeholder="Nombre del hábito..."
+            onKeyDown={e => { if (e.key==="Enter") submit(); if (e.key==="Escape") onCancel(); }}
+            style={{ ...inputStyle, flex:1 }}
+          />
+          <button onClick={submit} style={btnAccent}>✓</button>
+          <button onClick={onCancel} style={btnGhost}>✕</button>
+        </div>
+      );
+    }
+
+    // ─── TASK ITEM ────────────────────────────────────────────────────────────────
+    function TaskItem({ task, onToggle, onRemove, accent }) {
+      return (
+        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 0", borderBottom:`1px solid ${C.border}` }}>
+          <button onClick={onToggle} style={{
+            width:20, height:20, borderRadius:"50%", flexShrink:0, cursor:"pointer",
+            border:`1.5px solid ${task.done ? (accent||C.accent) : C.border2}`,
+            background: task.done ? (accent||C.accent) : "transparent",
+            display:"flex", alignItems:"center", justifyContent:"center",
+            transition:"all 0.15s",
+          }}>
+            {task.done && <span style={{ color:"#fff", fontSize:10, fontWeight:700 }}>✓</span>}
+          </button>
+          <span style={{ fontSize:13, color: task.done ? C.muted : C.text, flex:1, textDecoration: task.done ? "line-through" : "none", transition:"all 0.15s" }}>
+            {task.carry && !task.done && <span style={{ fontSize:10, color:C.amber, marginRight:5 }}>↩</span>}
+            {task.text}
+          </span>
+          <button onClick={onRemove} style={{ background:"transparent", border:"none", cursor:"pointer", color:C.muted, fontSize:16, lineHeight:1, padding:"0 2px" }}>×</button>
+        </div>
+      );
+    }
+
+    // ─── ADD TASK INLINE ─────────────────────────────────────────────────────────
+    function AddTaskInline({ onAdd, accent }) {
+      const [val, setVal] = useState("");
+      const [open, setOpen] = useState(false);
+      const ref = useRef(null);
+      useEffect(() => { if (open && ref.current) ref.current.focus({ preventScroll: true }); }, [open]);
+      const submit = () => {
+        if (!val.trim()) return;
+        onAdd(val.trim());
+        setVal("");
+        setOpen(false);
+      };
+      if (!open) return (
+        <button onClick={() => setOpen(true)} style={{ display:"flex", alignItems:"center", gap:5, marginTop:8, fontSize:12, color:accent||C.accent, background:"transparent", border:"none", cursor:"pointer" }}>
+          ＋ Agregar tarea
+        </button>
+      );
+      return (
+        <div style={{ display:"flex", gap:7, marginTop:10 }}>
+          <input ref={ref} value={val} onChange={e=>setVal(e.target.value)} placeholder="Nueva tarea..."
+            onKeyDown={e => { if(e.key==="Enter") submit(); if(e.key==="Escape") setOpen(false); }}
+            style={{ ...inputStyle, flex:1 }} />
+          <button onClick={submit} style={{ ...btnAccent, background: accent||C.accent }}>✓</button>
+          <button onClick={() => setOpen(false)} style={btnGhost}>✕</button>
+        </div>
+      );
+    }
+
+    // ─── MAIN APP ────────────────────────────────────────────────────────────────
+    function App() {
+      const [state, setState] = useState(load);
+      const [tab, setTab] = useState("today");
+      const [oodaOpen, setOodaOpen] = useState(false);
+      const [addingHabit, setAddingHabit] = useState(false);
+      const [editingObj, setEditingObj] = useState(false);
+      const [editingMicro, setEditingMicro] = useState(false);
+      const [tempObj, setTempObj] = useState("");
+      const [tempMicro, setTempMicro] = useState({ label:"", goal:"", earned:"" });
+      // tasks tab
+      const [newClientName, setNewClientName] = useState("");
+      const [addingClient, setAddingClient] = useState(false);
+      const addClientRef = useRef(null);
+      useEffect(() => { if (addingClient && addClientRef.current) addClientRef.current.focus({ preventScroll: true }); }, [addingClient]);
+
+      const update = useCallback((fn) => {
+        setState(prev => { const next = fn(prev); save(next); return next; });
+      }, []);
+
+      const tk = todayKey();
+      const log = state.dailyLogs[tk] || { done:[], ooda:{}, reflect1:"", reflect2:"" };
+
+      const updateLog = patch => update(prev => ({
+        ...prev,
+        dailyLogs: { ...prev.dailyLogs, [tk]: { ...(prev.dailyLogs[tk] || { done:[], ooda:{}, reflect1:"", reflect2:"" }), ...patch } }
+      }));
+
+      const toggleHabit = id => {
+        const done = log.done.includes(id) ? log.done.filter(x=>x!==id) : [...log.done, id];
+        updateLog({ done });
+      };
+
+      // ── Client task helpers ──
+      const getClientTasks = (clientId) => state.clientTasks[clientId] || [];
+      const addClientTask = (clientId, text) => {
+        update(prev => ({
+          ...prev,
+          clientTasks: {
+            ...prev.clientTasks,
+            [clientId]: [...(prev.clientTasks[clientId]||[]), { id: Date.now(), text, done: false, carry: false }]
+          }
+        }));
+      };
+      const toggleClientTask = (clientId, taskId) => {
+        update(prev => ({
+          ...prev,
+          clientTasks: {
+            ...prev.clientTasks,
+            [clientId]: (prev.clientTasks[clientId]||[]).map(t => t.id===taskId ? {...t, done:!t.done} : t)
+          }
+        }));
+      };
+      const removeClientTask = (clientId, taskId) => {
+        update(prev => ({
+          ...prev,
+          clientTasks: {
+            ...prev.clientTasks,
+            [clientId]: (prev.clientTasks[clientId]||[]).filter(t => t.id!==taskId)
+          }
+        }));
+      };
+      const addClient = () => {
+        if (!newClientName.trim()) return;
+        const colors = ["#f59e0b","#06b6d4","#8b5cf6","#22c55e","#ef4444","#f97316","#ec4899"];
+        const color = colors[state.clients.length % colors.length];
+        update(prev => ({ ...prev, clients: [...prev.clients, { id: "c"+Date.now(), name: newClientName.trim(), color }] }));
+        setNewClientName("");
+        setAddingClient(false);
+      };
+      const removeClient = (clientId) => {
+        update(prev => {
+          const ct = {...prev.clientTasks};
+          delete ct[clientId];
+          return { ...prev, clients: prev.clients.filter(c=>c.id!==clientId), clientTasks: ct };
+        });
+      };
+
+      // ── Personal task helpers ──
+      const addPersonalTask = (text) => {
+        update(prev => ({ ...prev, personalTasks: [...prev.personalTasks, { id: Date.now(), text, done: false, carry: false }] }));
+      };
+      const togglePersonalTask = (id) => {
+        update(prev => ({ ...prev, personalTasks: prev.personalTasks.map(t => t.id===id ? {...t, done:!t.done} : t) }));
+      };
+      const removePersonalTask = (id) => {
+        update(prev => ({ ...prev, personalTasks: prev.personalTasks.filter(t => t.id!==id) }));
+      };
+
+      const doneCount = log.done.length;
+      const totalH = state.habits.length;
+      const pct = totalH ? Math.round(doneCount/totalH*100) : 0;
+      const microPct = Math.min(100, Math.round(state.micro.earned/state.micro.goal*100));
+
+      const prioStyle = {
+        alta: { bg:"rgba(239,68,68,0.12)", text:"#ef4444", border:"rgba(239,68,68,0.3)" },
+        media: { bg:"rgba(245,158,11,0.12)", text:"#f59e0b", border:"rgba(245,158,11,0.3)" },
+        baja: { bg:"rgba(34,197,94,0.12)", text:"#22c55e", border:"rgba(34,197,94,0.3)" },
+      };
+
+      // ── TODAY TAB ─────────────────────────────────────────────────────────────
+      const TodayTab = () => (
+        <div>
+          {/* Objective */}
+          <div style={{ ...cardStyle, borderLeft:`2px solid ${C.accent}` }}>
+            <span style={labelStyle}>◈ Objetivo largo plazo</span>
+            {editingObj ? (
+              <div style={{ display:"flex", gap:8 }}>
+                <input value={tempObj} onChange={e=>setTempObj(e.target.value)}
+                  onKeyDown={e=>{ if(e.key==="Enter"){ update(p=>({...p, objective:tempObj})); setEditingObj(false); } }}
+                  style={{ ...inputStyle, flex:1 }} autoFocus />
+                <button onClick={()=>{ update(p=>({...p, objective:tempObj})); setEditingObj(false); }} style={btnAccent}>✓</button>
+              </div>
+            ) : (
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
+                <p style={{ fontSize:14, fontWeight:500, color:C.text, margin:0, lineHeight:1.6 }}>{state.objective}</p>
+                <button onClick={()=>{ setTempObj(state.objective); setEditingObj(true); }}
+                  style={{ background:"transparent", border:"none", cursor:"pointer", color:C.muted, fontSize:16, padding:"0 2px", flexShrink:0 }}>✎</button>
+              </div>
+            )}
+          </div>
+
+          {/* Micro */}
+          <div style={{ ...cardStyle, borderLeft:`2px solid ${C.cyan}` }}>
+            <span style={labelStyle}>◎ Microobjetivo — este mes</span>
+            {editingMicro ? (
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                <input placeholder="Descripción" value={tempMicro.label} onChange={e=>setTempMicro(p=>({...p, label:e.target.value}))} style={inputStyle} />
+                <div style={{ display:"flex", gap:8 }}>
+                  <input placeholder="Meta $" value={tempMicro.goal} onChange={e=>setTempMicro(p=>({...p, goal:e.target.value}))} type="number" style={{ ...inputStyle }} />
+                  <input placeholder="Ganado $" value={tempMicro.earned} onChange={e=>setTempMicro(p=>({...p, earned:e.target.value}))} type="number" style={{ ...inputStyle }} />
+                </div>
+                <div style={{ display:"flex", gap:8 }}>
+                  <button onClick={()=>{ update(p=>({...p, micro:{label:tempMicro.label, goal:+tempMicro.goal, earned:+tempMicro.earned}})); setEditingMicro(false); }} style={{ ...btnAccent, background:C.cyan, color:"#000", flex:1 }}>Guardar</button>
+                  <button onClick={()=>setEditingMicro(false)} style={btnGhost}>✕</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8, marginBottom:12 }}>
+                  <p style={{ fontSize:14, fontWeight:500, color:C.text, margin:0 }}>{state.micro.label}</p>
+                  <button onClick={()=>{ setTempMicro({label:state.micro.label, goal:String(state.micro.goal), earned:String(state.micro.earned)}); setEditingMicro(true); }}
+                    style={{ background:"transparent", border:"none", cursor:"pointer", color:C.muted, fontSize:16, flexShrink:0 }}>✎</button>
+                </div>
+                <div style={{ display:"flex", alignItems:"center", gap:14, marginBottom:8 }}>
+                  <span style={{ fontSize:28, fontWeight:700, color:C.cyan, letterSpacing:"-0.02em" }}>${state.micro.earned.toLocaleString()}</span>
+                  <div style={{ flex:1 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:C.muted, marginBottom:5 }}>
+                      <span>meta: ${state.micro.goal.toLocaleString()}</span>
+                      <span style={{ color:C.cyan }}>{microPct}%</span>
+                    </div>
+                    <div style={{ height:6, background:C.surface2, borderRadius:99, overflow:"hidden" }}>
+                      <div style={{ width:`${microPct}%`, height:"100%", background:`linear-gradient(90deg, ${C.cyan}, #818cf8)`, borderRadius:99, transition:"width 0.6s ease" }} />
+                    </div>
+                  </div>
+                </div>
+                <div style={{ fontSize:11, color:C.muted }}>
+                  Faltan <span style={{ color:C.text, fontWeight:600 }}>${(state.micro.goal-state.micro.earned).toLocaleString()}</span> · {30-new Date().getDate()} días restantes del mes
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Habits */}
+          <div style={cardStyle}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+              <span style={{ ...labelStyle, marginBottom:0 }}>◆ Hábitos de hoy</span>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <span style={{ fontSize:11, color:pct===100?C.green:C.muted }}>{doneCount}/{totalH}</span>
+                <div style={{ width:72, height:5, background:C.surface2, borderRadius:99, overflow:"hidden" }}>
+                  <div style={{ width:`${pct}%`, height:"100%", background:pct===100?C.green:C.accent, borderRadius:99, transition:"width 0.3s" }} />
+                </div>
+              </div>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:7 }}>
+              {state.habits.map(h => {
+                const done = log.done.includes(h.id);
+                const streak = getStreak(state.dailyLogs, h.id);
+                return (
+                  <button key={h.id} onClick={()=>toggleHabit(h.id)} style={{
+                    display:"flex", alignItems:"center", gap:8, padding:"10px 11px",
+                    borderRadius:9, border:`1px solid ${done?"rgba(139,92,246,0.4)":C.border}`,
+                    background:done?C.accentDim:"transparent", cursor:"pointer", textAlign:"left", transition:"all 0.15s",
+                  }}>
+                    <div style={{ width:18, height:18, borderRadius:"50%", flexShrink:0, border:`1.5px solid ${done?C.accent:C.border2}`, background:done?C.accent:"transparent", display:"flex", alignItems:"center", justifyContent:"center", transition:"all 0.15s" }}>
+                      {done && <span style={{ color:"#fff", fontSize:10, fontWeight:700 }}>✓</span>}
+                    </div>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, color:done?C.text:C.muted, fontWeight:done?500:400, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{h.icon} {h.name}</div>
+                      {streak>1 && <div style={{ fontSize:10, color:C.accent, marginTop:1 }}>🔥 {streak}d</div>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            {addingHabit ? (
+              <HabitInput
+                onAdd={text => { update(p=>({...p, habits:[...p.habits, {id:Date.now(), name:text, icon:"✅"}]})); setAddingHabit(false); }}
+                onCancel={() => setAddingHabit(false)}
+              />
+            ) : (
+              <button onClick={()=>setAddingHabit(true)} style={{ display:"flex", alignItems:"center", gap:5, marginTop:10, fontSize:12, color:C.muted, background:"transparent", border:"none", cursor:"pointer" }}>
+                ＋ Agregar hábito
+              </button>
+            )}
+          </div>
+
+          {/* OODA */}
+          <div style={cardStyle}>
+            <button onClick={()=>setOodaOpen(p=>!p)} style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"space-between", background:"transparent", border:"none", cursor:"pointer", padding:0 }}>
+              <div style={{ textAlign:"left" }}>
+                <span style={labelStyle}>⟳ OODA — si algo no funciona</span>
+                <p style={{ fontSize:13, color:oodaOpen?C.accent:C.muted, margin:0 }}>{oodaOpen?"Revisando estrategia activamente":"Activar si algo no está funcionando"}</p>
+              </div>
+              <span style={{ fontSize:11, padding:"3px 10px", borderRadius:99, background:oodaOpen?C.accentDim:C.surface2, color:oodaOpen?C.accent:C.muted, border:`1px solid ${oodaOpen?C.accent+"40":C.border}`, marginLeft:8, flexShrink:0 }}>
+                {oodaOpen?"Activo":"No hoy"}
+              </span>
+            </button>
+            {oodaOpen && (
+              <div style={{ marginTop:14 }}>
+                {[
+                  { key:"observe", tag:"O", title:"Observar", q:"¿Qué está pasando realmente? (datos, hechos)" },
+                  { key:"orient",  tag:"O", title:"Orientar",  q:"¿Por qué está pasando? (causa raíz)" },
+                  { key:"decide",  tag:"D", title:"Decidir",   q:"¿Qué voy a cambiar o probar esta semana?" },
+                  { key:"act",     tag:"A", title:"Actuar",    q:"Acción concreta para mañana (1 cosa)" },
+                ].map(step => (
+                  <div key={step.key} style={{ marginBottom:10 }}>
+                    <div style={{ fontSize:10, fontWeight:700, color:C.accent, letterSpacing:"0.1em", marginBottom:3 }}>{step.tag} — {step.title.toUpperCase()}</div>
+                    <div style={{ fontSize:11, color:C.muted, marginBottom:4 }}>{step.q}</div>
+                    <textarea value={log.ooda?.[step.key]||""} onChange={e=>updateLog({ooda:{...(log.ooda||{}), [step.key]:e.target.value}})}
+                      placeholder="Escribe aquí..." rows={2}
+                      style={{ ...inputStyle, resize:"none" }} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Reflexión */}
+          <div style={cardStyle}>
+            <span style={labelStyle}>◉ Reflexión nocturna — 2 min</span>
+            {[
+              { key:"reflect1", q:"¿Qué fue lo más importante que hice hoy?" },
+              { key:"reflect2", q:"¿Qué ajusto mañana?" },
+            ].map(f => (
+              <div key={f.key} style={{ marginBottom:10 }}>
+                <div style={{ fontSize:11, color:C.muted, marginBottom:4 }}>{f.q}</div>
+                <textarea value={log[f.key]||""} onChange={e=>updateLog({[f.key]:e.target.value})}
+                  placeholder="Una línea..." rows={2}
+                  style={{ ...inputStyle, resize:"none" }} />
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+
+      // ── TASKS TAB ─────────────────────────────────────────────────────────────
+      const TasksTab = () => {
+        const allClientDone = state.clients.every(c => (state.clientTasks[c.id]||[]).filter(t=>!t.done).length === 0);
+        const allPersonalDone = state.personalTasks.filter(t=>!t.done).length === 0;
+        const totalTasks = state.clients.reduce((s,c)=>s+(state.clientTasks[c.id]||[]).length, 0) + state.personalTasks.length;
+        const doneTasks = state.clients.reduce((s,c)=>s+(state.clientTasks[c.id]||[]).filter(t=>t.done).length, 0) + state.personalTasks.filter(t=>t.done).length;
+
+        return (
+          <div>
+            {/* 4 preguntas filtro — siempre visibles */}
+            <div style={{ ...cardStyle, borderLeft:`2px solid ${C.amber}`, background:"rgba(245,158,11,0.05)" }}>
+              <span style={{ ...labelStyle, color:C.amber }}>🧠 Preguntas antes de empezar</span>
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {[
+                  "¿Qué cosas hago solo para convencerme de que estoy trabajando?",
+                  "¿Qué cosas hago solo para perder el tiempo?",
+                  "¿Qué cosas hago solo para verme bien frente al universo?",
+                  "¿Cuáles son las cosas que producirán más valor para mí o mis clientes?",
+                ].map((q, i) => (
+                  <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10 }}>
+                    <span style={{ fontSize:12, color:C.amber, fontWeight:700, marginTop:1, flexShrink:0 }}>{i+1}.</span>
+                    <span style={{ fontSize:13, color:C.text, lineHeight:1.5 }}>{q}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop:12, padding:"8px 12px", background:"rgba(245,158,11,0.08)", borderRadius:8, border:`1px solid rgba(245,158,11,0.2)` }}>
+                <p style={{ fontSize:11, color:C.amber, margin:0 }}>Solo deja en tu lista las tareas que sobrevivan estas 4 preguntas.</p>
+              </div>
+            </div>
+
+            {/* Progress bar general */}
+            {totalTasks > 0 && (
+              <div style={{ ...cardStyle }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                  <span style={{ ...labelStyle, marginBottom:0 }}>◆ Progreso del día</span>
+                  <span style={{ fontSize:12, color: doneTasks===totalTasks ? C.green : C.muted }}>{doneTasks}/{totalTasks} tareas</span>
+                </div>
+                <div style={{ height:6, background:C.surface2, borderRadius:99, overflow:"hidden" }}>
+                  <div style={{ width:`${Math.round(doneTasks/totalTasks*100)}%`, height:"100%", background:doneTasks===totalTasks?C.green:C.accent, borderRadius:99, transition:"width 0.4s" }} />
+                </div>
+              </div>
+            )}
+
+            {/* Tareas por cliente */}
+            {state.clients.map(client => {
+              const tasks = getClientTasks(client.id);
+              const pending = tasks.filter(t=>!t.done).length;
+              return (
+                <div key={client.id} style={{ ...cardStyle, borderLeft:`2px solid ${client.color}` }}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                      <div style={{ width:8, height:8, borderRadius:"50%", background:client.color, flexShrink:0 }} />
+                      <span style={{ fontSize:13, fontWeight:600, color:C.text }}>{client.name}</span>
+                      {pending>0 && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:99, background:`${client.color}20`, color:client.color, border:`1px solid ${client.color}40` }}>{pending} pendientes</span>}
+                      {pending===0 && tasks.length>0 && <span style={{ fontSize:10, color:C.green }}>✓ Listo</span>}
+                    </div>
+                    <button onClick={()=>removeClient(client.id)} style={{ background:"transparent", border:"none", cursor:"pointer", color:C.muted, fontSize:14, opacity:0.5 }}>×</button>
+                  </div>
+                  {tasks.length===0 && <p style={{ fontSize:12, color:C.muted, marginBottom:6 }}>Sin tareas para este cliente</p>}
+                  {tasks.map(t => (
+                    <TaskItem key={t.id} task={t} accent={client.color}
+                      onToggle={()=>toggleClientTask(client.id, t.id)}
+                      onRemove={()=>removeClientTask(client.id, t.id)} />
+                  ))}
+                  <AddTaskInline onAdd={text=>addClientTask(client.id, text)} accent={client.color} />
+                </div>
+              );
+            })}
+
+            {/* Agregar cliente */}
+            <div style={{ ...cardStyle, borderStyle:"dashed" }}>
+              {addingClient ? (
+                <div style={{ display:"flex", gap:7 }}>
+                  <input ref={addClientRef} value={newClientName} onChange={e=>setNewClientName(e.target.value)}
+                    placeholder="Nombre del cliente..." onKeyDown={e=>{ if(e.key==="Enter") addClient(); if(e.key==="Escape") setAddingClient(false); }}
+                    style={{ ...inputStyle, flex:1 }} />
+                  <button onClick={addClient} style={btnAccent}>✓</button>
+                  <button onClick={()=>setAddingClient(false)} style={btnGhost}>✕</button>
+                </div>
+              ) : (
+                <button onClick={()=>setAddingClient(true)} style={{ display:"flex", alignItems:"center", gap:6, fontSize:13, color:C.muted, background:"transparent", border:"none", cursor:"pointer", width:"100%", justifyContent:"center" }}>
+                  ＋ Agregar cliente
+                </button>
+              )}
+            </div>
+
+            {/* Tareas propias */}
+            <div style={{ ...cardStyle, borderLeft:`2px solid ${C.accent}` }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <span style={{ fontSize:13, fontWeight:600, color:C.text }}>👤 Tareas propias</span>
+                  {state.personalTasks.filter(t=>!t.done).length>0 && (
+                    <span style={{ fontSize:10, padding:"1px 6px", borderRadius:99, background:C.accentDim, color:C.accent, border:`1px solid ${C.accent}40` }}>
+                      {state.personalTasks.filter(t=>!t.done).length} pendientes
+                    </span>
+                  )}
+                </div>
+              </div>
+              {state.personalTasks.length===0 && <p style={{ fontSize:12, color:C.muted, marginBottom:6 }}>Sin tareas personales</p>}
+              {state.personalTasks.map(t => (
+                <TaskItem key={t.id} task={t} accent={C.accent}
+                  onToggle={()=>togglePersonalTask(t.id)}
+                  onRemove={()=>removePersonalTask(t.id)} />
+              ))}
+              <AddTaskInline onAdd={addPersonalTask} accent={C.accent} />
+            </div>
+
+            {/* Instrucción nocturna */}
+            <div style={{ margin:"8px 0", padding:"12px 16px", background:"rgba(139,92,246,0.06)", borderRadius:10, border:`1px solid rgba(139,92,246,0.15)` }}>
+              <p style={{ fontSize:12, color:C.muted, margin:0, lineHeight:1.7 }}>
+                🌙 <strong style={{ color:C.accent }}>Ritual nocturno:</strong> Cada noche revisa esta lista. Completa lo que puedas. Lo que no — queda para mañana automáticamente. Si algo lleva 2+ días sin hacerse, pregúntate si realmente importa.
+              </p>
+            </div>
+          </div>
+        );
+      };
+
+      // ── PROGRESS TAB ──────────────────────────────────────────────────────────
+      const ProgressTab = () => {
+        const dayLabels = ["Do","Lu","Ma","Mi","Ju","Vi","Sá"];
+        return (
+          <div>
+            <div style={{ ...cardStyle, display:"flex", flexDirection:"column", alignItems:"center" }}>
+              <span style={labelStyle}>◈ Radar — últimos 7 días</span>
+              <RadarChart habits={state.habits} logs={state.dailyLogs} />
+              <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginTop:12, justifyContent:"center" }}>
+                {state.habits.map(h => {
+                  const week = getLast7(state.dailyLogs, h.id);
+                  const rate = Math.round(week.filter(d=>d.done).length/7*100);
+                  return (
+                    <div key={h.id} style={{ display:"flex", alignItems:"center", gap:5, fontSize:11, color:C.muted, background:C.surface2, padding:"3px 8px", borderRadius:99, border:`1px solid ${C.border}` }}>
+                      {h.icon} <span style={{ color:rate>50?C.accent:C.muted }}>{rate}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={cardStyle}>
+              <span style={labelStyle}>◆ Detalle por hábito</span>
+              {state.habits.map(h => {
+                const week = getLast7(state.dailyLogs, h.id);
+                const rate = week.filter(d=>d.done).length/7;
+                const streak = getStreak(state.dailyLogs, h.id);
+                return (
+                  <div key={h.id} style={{ marginBottom:14 }}>
+                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:5 }}>
+                      <span style={{ fontSize:13, color:C.text }}>{h.icon} {h.name}</span>
+                      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                        {streak>0 && <span style={{ fontSize:10, color:C.accent }}>🔥 {streak}d</span>}
+                        <span style={{ fontSize:11, color:rate>0.5?C.accent:C.muted }}>{Math.round(rate*100)}%</span>
+                      </div>
+                    </div>
+                    <div style={{ height:5, background:C.surface2, borderRadius:99, overflow:"hidden", marginBottom:5 }}>
+                      <div style={{ width:`${rate*100}%`, height:"100%", background:rate>0.7?C.accent:rate>0.4?C.amber:C.red, borderRadius:99, transition:"width 0.5s" }} />
+                    </div>
+                    <div style={{ display:"flex", gap:4 }}>
+                      {week.map((d,i) => (
+                        <div key={i} style={{ flex:1, textAlign:"center" }}>
+                          <div style={{ height:22, borderRadius:5, background:d.done?C.accentDim:C.surface2, border:`1px solid ${d.done?C.accent+"60":C.border}`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                            {d.done && <span style={{ fontSize:9, color:C.accent }}>✓</span>}
+                          </div>
+                          <div style={{ fontSize:9, color:C.muted, marginTop:2 }}>{dayLabels[new Date(d.key+"T12:00:00").getDay()]}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={cardStyle}>
+              <span style={labelStyle}>◎ Microobjetivo</span>
+              <div style={{ display:"flex", alignItems:"center", gap:14, marginBottom:12 }}>
+                <span style={{ fontSize:32, fontWeight:700, color:C.cyan, letterSpacing:"-0.03em" }}>{microPct}%</span>
+                <div style={{ flex:1 }}>
+                  <div style={{ height:10, background:C.surface2, borderRadius:99, overflow:"hidden" }}>
+                    <div style={{ width:`${microPct}%`, height:"100%", background:`linear-gradient(90deg, ${C.cyan}, ${C.accent})`, borderRadius:99, transition:"width 0.6s" }} />
+                  </div>
+                  <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:C.muted, marginTop:4 }}>
+                    <span>${state.micro.earned.toLocaleString()} ganados</span>
+                    <span>meta ${state.micro.goal.toLocaleString()}</span>
+                  </div>
+                </div>
+              </div>
+              <div style={{ padding:"10px 14px", background:C.surface2, borderRadius:9, border:`1px solid ${C.border}` }}>
+                <div style={{ fontSize:11, color:C.muted, marginBottom:4 }}>Para cumplir la meta necesitas ganar</div>
+                <div style={{ fontSize:20, fontWeight:700, color:C.text }}>${(state.micro.goal-state.micro.earned).toLocaleString()}</div>
+                <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>en {30-new Date().getDate()} días restantes · ~${Math.round((state.micro.goal-state.micro.earned)/Math.max(1,30-new Date().getDate())).toLocaleString()}/día</div>
+              </div>
+            </div>
+
+            <div style={cardStyle}>
+              <span style={labelStyle}>◉ Historial de reflexiones</span>
+              {Object.entries(state.dailyLogs).filter(([,v])=>v.reflect1||v.reflect2).sort((a,b)=>b[0].localeCompare(a[0])).slice(0,7).map(([k,v]) => (
+                <div key={k} style={{ marginBottom:10, paddingBottom:10, borderBottom:`1px solid ${C.border}` }}>
+                  <div style={{ fontSize:10, color:C.muted, marginBottom:3 }}>{k}</div>
+                  {v.reflect1 && <p style={{ fontSize:12, color:C.text, margin:"0 0 2px" }}>✅ {v.reflect1}</p>}
+                  {v.reflect2 && <p style={{ fontSize:12, color:C.muted, margin:0 }}>🔄 {v.reflect2}</p>}
+                </div>
+              ))}
+              {!Object.values(state.dailyLogs).some(v=>v.reflect1||v.reflect2) && (
+                <p style={{ fontSize:12, color:C.muted }}>Aún sin reflexiones.</p>
+              )}
+            </div>
+          </div>
+        );
+      };
+
+      // ── SETTINGS TAB ──────────────────────────────────────────────────────────
+      const SettingsTab = () => (
+        <div>
+          <div style={cardStyle}>
+            <span style={labelStyle}>◆ Hábitos activos</span>
+            {state.habits.map(h => (
+              <div key={h.id} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"8px 0", borderBottom:`1px solid ${C.border}` }}>
+                <span style={{ fontSize:14 }}>{h.icon} {h.name}</span>
+                <button onClick={()=>update(p=>({...p, habits:p.habits.filter(x=>x.id!==h.id)}))} style={{ background:"transparent", border:"none", cursor:"pointer", color:C.muted, fontSize:16 }}>×</button>
+              </div>
+            ))}
+            {addingHabit ? (
+              <HabitInput onAdd={text=>{update(p=>({...p,habits:[...p.habits,{id:Date.now(),name:text,icon:"✅"}]}));setAddingHabit(false);}} onCancel={()=>setAddingHabit(false)} />
+            ) : (
+              <button onClick={()=>setAddingHabit(true)} style={{ display:"flex", alignItems:"center", gap:5, marginTop:10, fontSize:13, color:C.accent, background:"transparent", border:"none", cursor:"pointer" }}>
+                ＋ Agregar hábito
+              </button>
+            )}
+          </div>
+          <div style={cardStyle}>
+            <span style={labelStyle}>⚠ Zona peligrosa</span>
+            <button onClick={()=>{ if(window.confirm("¿Resetear todos los datos?")){ const d=defaultState(); save(d); setState(d); } }}
+              style={{ fontSize:13, padding:"8px 14px", borderRadius:8, border:`1px solid rgba(239,68,68,0.3)`, background:"rgba(239,68,68,0.1)", color:"#ef4444", cursor:"pointer" }}>
+              Resetear todos los datos
+            </button>
+          </div>
+        </div>
+      );
+
+      const tabs = [["today","Hoy"],["tasks","Tareas"],["progress","Progreso"],["settings","Config"]];
+
+      return (
+        <div style={{ minHeight:"100vh", background:C.bg, color:C.text, fontFamily:"'Inter', system-ui, -apple-system, sans-serif" }}>
+          <div style={{ maxWidth:680, margin:"0 auto", padding:"0 16px 80px" }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"20px 0 16px" }}>
+              <div>
+                <div style={{ fontSize:18, fontWeight:700, color:C.text, letterSpacing:"0.02em" }}>MI SISTEMA</div>
+                <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.04em", marginTop:1 }}>
+                  {new Date().toLocaleDateString("es-PE",{weekday:"long",day:"numeric",month:"long"}).toUpperCase()}
+                </div>
+              </div>
+              <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                <div style={{ width:8, height:8, borderRadius:"50%", background:pct===100?C.green:C.accent, boxShadow:`0 0 8px ${pct===100?C.green:C.accent}` }} />
+                <span style={{ fontSize:11, color:C.muted }}>{pct}% hábitos</span>
+              </div>
+            </div>
+
+            <div style={{ display:"flex", gap:2, background:C.surface, border:`1px solid ${C.border}`, borderRadius:10, padding:3, marginBottom:16 }}>
+              {tabs.map(([id,lbl]) => (
+                <button key={id} onClick={()=>setTab(id)} style={{
+                  flex:1, padding:"7px 0", borderRadius:8, border:"none", cursor:"pointer",
+                  fontSize:12, fontWeight:tab===id?600:400, letterSpacing:"0.01em",
+                  background:tab===id?C.accent:"transparent",
+                  color:tab===id?"#fff":C.muted,
+                  transition:"all 0.2s",
+                }}>{lbl}</button>
+              ))}
+            </div>
+
+            {tab==="today" && <TodayTab />}
+            {tab==="tasks" && <TasksTab />}
+            {tab==="progress" && <ProgressTab />}
+            {tab==="settings" && <SettingsTab />}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
