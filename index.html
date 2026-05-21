@@ -13,24 +13,22 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #0d0d14; font-family: 'Inter', system-ui, sans-serif; overflow: hidden; height: 100vh; }
-    textarea, input, button { font-family: 'Inter', system-ui, sans-serif; }
-    input:focus, textarea:focus { outline: none; }
+    textarea, input, button, select { font-family: 'Inter', system-ui, sans-serif; }
+    input:focus, textarea:focus, select:focus { outline: none; }
     textarea { resize: vertical; }
-    ::-webkit-scrollbar { width: 4px; } 
+    ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #2a2a3f; border-radius: 99px; }
     ::-webkit-scrollbar-thumb:hover { background: #3a3a5a; }
-
     .drag-item { transition: opacity 0.15s, transform 0.15s; }
     .drag-item.dragging { opacity: 0.35; transform: scale(0.98); }
     .drag-item.drag-over { border-top: 2px solid #8b5cf6 !important; }
-
-    @keyframes slideIn {
-      from { opacity: 0; transform: translateY(6px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
+    @keyframes slideIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
     .slide-in { animation: slideIn 0.2s ease forwards; }
-
+    @keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
+    .modal-bg { animation: fadeIn 0.15s ease; }
+    input[type="time"]::-webkit-calendar-picker-indicator,
+    input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
     @media (max-width: 768px) {
       body { overflow: auto; height: auto; }
       #layout { flex-direction: column !important; height: auto !important; }
@@ -45,13 +43,13 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-  const { useState, useCallback, useRef, useEffect } = React;
+  const { useState, useCallback, useRef, useEffect, useMemo } = React;
 
-  const STORAGE_KEY = "mi_sistema_v3";
+  const STORAGE_KEY = "mi_sistema_v5";
   const todayKey = () => new Date().toISOString().slice(0, 10);
 
   const defaultState = () => ({
-    objective: "Leer 24 libros este año y aplicar lo aprendido",
+    objective: "Lograr facturar 100,000 soles al mes",
     micro: { label: "Conseguir clientes y generar $10,000", goal: 10000, earned: 3200 },
     habits: [
       { id: 1, name: "Ejercicio", icon: "⚡" },
@@ -69,14 +67,17 @@
     clientTasks: {},
     personalTasks: [],
     dailyLogs: {},
-    priorityOrder: [], // array of { taskId, source: "client"|"personal", clientId? }
+    priorityOrder: [],
   });
 
   function load() {
     try {
       const r = localStorage.getItem(STORAGE_KEY);
-      if (r) {
-        const p = JSON.parse(r), d = defaultState();
+      // Also try to migrate from v3/v4
+      const r_old = !r && (localStorage.getItem("mi_sistema_v3") || localStorage.getItem("mi_sistema_v4"));
+      const raw = r || r_old;
+      if (raw) {
+        const p = JSON.parse(raw), d = defaultState();
         return { ...d, ...p, clients: p.clients||d.clients, clientTasks: p.clientTasks||{}, personalTasks: p.personalTasks||[], priorityOrder: p.priorityOrder||[] };
       }
     } catch {}
@@ -103,12 +104,38 @@
     return count;
   }
 
+  // Time helpers
+  function timeToMinutes(t) {
+    if (!t) return null;
+    const [h, m] = t.split(":").map(Number);
+    return h * 60 + m;
+  }
+  function minutesToTime(m) {
+    const h = Math.floor(m / 60) % 24;
+    const min = m % 60;
+    return `${String(h).padStart(2,"0")}:${String(min).padStart(2,"0")}`;
+  }
+  function formatTime12(t) {
+    if (!t) return "";
+    const [h, m] = t.split(":").map(Number);
+    const ampm = h >= 12 ? "pm" : "am";
+    const h12 = h % 12 || 12;
+    return `${h12}:${String(m).padStart(2,"0")}${ampm}`;
+  }
+  function formatDateShort(d) {
+    if (!d) return "";
+    const [y, mo, day] = d.split("-");
+    const months = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+    return `${parseInt(day)} ${months[parseInt(mo)-1]}`;
+  }
+
   const C = {
     bg: "#0d0d14", sidebar: "#0f0f1a", surface: "#13131f", surface2: "#1a1a2e",
     border: "#2a2a3f", border2: "#3a3a5a",
     text: "#e8e8f0", muted: "#606090", muted2: "#9090b8",
     accent: "#8b5cf6", accentDim: "rgba(139,92,246,0.12)", accentGlow: "rgba(139,92,246,0.25)",
     green: "#22c55e", amber: "#f59e0b", red: "#ef4444", cyan: "#06b6d4",
+    modal: "#161622",
   };
   const card = (extra={}) => ({ background: C.surface, border:`1px solid ${C.border}`, borderRadius:10, padding:"14px 16px", marginBottom:8, ...extra });
   const lbl = { fontSize:10, fontWeight:700, letterSpacing:"0.1em", textTransform:"uppercase", color:C.muted, marginBottom:8, display:"block" };
@@ -116,6 +143,171 @@
   const btnA = { padding:"6px 14px", borderRadius:7, border:"none", background:C.accent, color:"#fff", cursor:"pointer", fontSize:13, fontWeight:500 };
   const btnG = { padding:"6px 14px", borderRadius:7, border:`1px solid ${C.border}`, background:"transparent", color:C.muted, cursor:"pointer", fontSize:13 };
 
+  // ─── TASK SCHEDULE MODAL ───────────────────────────────────────────────────
+  function TaskScheduleModal({ task, onSave, onClose }) {
+    const [date, setDate] = useState(task.date || "");
+    const [timeStart, setTimeStart] = useState(task.timeStart || "");
+    const [timeEnd, setTimeEnd] = useState(task.timeEnd || "");
+    const [repeat, setRepeat] = useState(task.repeat || "none"); // "none" | "daily"
+
+    const handleSave = () => {
+      onSave({ date, timeStart, timeEnd, repeat });
+      onClose();
+    };
+
+    return (
+      <div className="modal-bg" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center" }}
+        onClick={e => { if(e.target===e.currentTarget) onClose(); }}>
+        <div style={{ background:C.modal, border:`1px solid ${C.border2}`, borderRadius:14, padding:24, width:360, boxShadow:"0 24px 60px rgba(0,0,0,0.6)" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18 }}>
+            <div>
+              <div style={{ fontSize:14, fontWeight:600, color:C.text }}>Programar tarea</div>
+              <div style={{ fontSize:11, color:C.muted, marginTop:2, maxWidth:260, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{task.text}</div>
+            </div>
+            <button onClick={onClose} style={{ background:"transparent", border:"none", cursor:"pointer", color:C.muted, fontSize:20, lineHeight:1, padding:"0 4px" }}>×</button>
+          </div>
+
+          {/* Date */}
+          <div style={{ marginBottom:14 }}>
+            <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:5, fontWeight:600, letterSpacing:"0.06em", textTransform:"uppercase" }}>Fecha (opcional)</label>
+            <input type="date" value={date} onChange={e=>setDate(e.target.value)}
+              style={{ ...inp, colorScheme:"dark" }}/>
+            {date && <button onClick={()=>setDate("")} style={{ marginTop:5, fontSize:10, color:C.muted, background:"transparent", border:"none", cursor:"pointer" }}>× quitar fecha</button>}
+          </div>
+
+          {/* Time */}
+          <div style={{ marginBottom:14 }}>
+            <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:5, fontWeight:600, letterSpacing:"0.06em", textTransform:"uppercase" }}>Horario (opcional)</label>
+            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+              <input type="time" value={timeStart} onChange={e=>setTimeStart(e.target.value)}
+                style={{ ...inp, colorScheme:"dark", flex:1 }} placeholder="Inicio"/>
+              <span style={{ color:C.muted, fontSize:12 }}>→</span>
+              <input type="time" value={timeEnd} onChange={e=>setTimeEnd(e.target.value)}
+                style={{ ...inp, colorScheme:"dark", flex:1 }} placeholder="Fin"/>
+            </div>
+            {(timeStart||timeEnd) && <button onClick={()=>{setTimeStart(""); setTimeEnd("");}} style={{ marginTop:5, fontSize:10, color:C.muted, background:"transparent", border:"none", cursor:"pointer" }}>× quitar horario</button>}
+          </div>
+
+          {/* Repeat */}
+          <div style={{ marginBottom:20 }}>
+            <label style={{ fontSize:11, color:C.muted, display:"block", marginBottom:5, fontWeight:600, letterSpacing:"0.06em", textTransform:"uppercase" }}>Repetición</label>
+            <div style={{ display:"flex", gap:6 }}>
+              {[{v:"none",l:"Sin repetir"},{v:"daily",l:"Todos los días"}].map(opt => (
+                <button key={opt.v} onClick={()=>setRepeat(opt.v)}
+                  style={{ flex:1, padding:"7px 10px", borderRadius:8, border:`1px solid ${repeat===opt.v?C.accent:C.border}`, background:repeat===opt.v?C.accentDim:"transparent", color:repeat===opt.v?C.accent:C.muted, cursor:"pointer", fontSize:12, fontWeight:repeat===opt.v?600:400, transition:"all 0.15s" }}>
+                  {opt.l}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={handleSave} style={{ ...btnA, flex:1, padding:"9px 0", fontSize:13 }}>Guardar</button>
+            <button onClick={onClose} style={{ ...btnG, flex:1, padding:"9px 0", fontSize:13 }}>Cancelar</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── ADD TASK INLINE WITH SCHEDULE ────────────────────────────────────────
+  function AddTaskInline({ onAdd, accent }) {
+    const [val, setVal] = useState("");
+    const [open, setOpen] = useState(false);
+    const [showSchedule, setShowSchedule] = useState(false);
+    const [date, setDate] = useState("");
+    const [timeStart, setTimeStart] = useState("");
+    const [timeEnd, setTimeEnd] = useState("");
+    const [repeat, setRepeat] = useState("none");
+    const ref = useRef(null);
+    useEffect(() => { if (open) ref.current?.focus({ preventScroll:true }); }, [open]);
+
+    const submit = () => {
+      if (!val.trim()) return;
+      onAdd(val.trim(), { date, timeStart, timeEnd, repeat });
+      setVal(""); setDate(""); setTimeStart(""); setTimeEnd(""); setRepeat("none");
+      setOpen(false); setShowSchedule(false);
+    };
+
+    if (!open) return <button onClick={()=>setOpen(true)} style={{ display:"flex",alignItems:"center",gap:4,marginTop:6,fontSize:12,color:accent||C.accent,background:"transparent",border:"none",cursor:"pointer" }}>＋ Agregar tarea</button>;
+
+    return (
+      <div style={{ marginTop:8 }}>
+        <div style={{ display:"flex",gap:6 }}>
+          <input ref={ref} value={val} onChange={e=>setVal(e.target.value)} placeholder="Nueva tarea..."
+            onKeyDown={e=>{ if(e.key==="Enter") submit(); if(e.key==="Escape") setOpen(false); }}
+            style={{ ...inp, flex:1 }} />
+          <button onClick={submit} style={{ ...btnA, background:accent||C.accent }}>✓</button>
+          <button onClick={()=>setOpen(false)} style={btnG}>✕</button>
+        </div>
+        {/* Schedule toggle */}
+        <button onClick={()=>setShowSchedule(p=>!p)} style={{ display:"flex",alignItems:"center",gap:4,marginTop:5,fontSize:11,color:showSchedule?C.accent:C.muted,background:"transparent",border:"none",cursor:"pointer" }}>
+          🕐 {showSchedule?"Ocultar horario":"+ Agregar horario (opcional)"}
+        </button>
+        {showSchedule && (
+          <div style={{ marginTop:8, padding:"10px 12px", background:C.surface2, borderRadius:8, border:`1px solid ${C.border}` }}>
+            <div style={{ display:"flex", gap:8, marginBottom:8 }}>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>Fecha</div>
+                <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{ ...inp, fontSize:12, colorScheme:"dark" }}/>
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:6, alignItems:"center", marginBottom:8 }}>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>Inicio</div>
+                <input type="time" value={timeStart} onChange={e=>setTimeStart(e.target.value)} style={{ ...inp, fontSize:12, colorScheme:"dark" }}/>
+              </div>
+              <span style={{ color:C.muted, fontSize:11, marginTop:16 }}>→</span>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:10, color:C.muted, marginBottom:4 }}>Fin</div>
+                <input type="time" value={timeEnd} onChange={e=>setTimeEnd(e.target.value)} style={{ ...inp, fontSize:12, colorScheme:"dark" }}/>
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:5 }}>
+              {[{v:"none",l:"Sin repetir"},{v:"daily",l:"🔁 Todos los días"}].map(opt => (
+                <button key={opt.v} onClick={()=>setRepeat(opt.v)}
+                  style={{ flex:1, padding:"5px 8px", borderRadius:7, border:`1px solid ${repeat===opt.v?C.accent:C.border}`, background:repeat===opt.v?C.accentDim:"transparent", color:repeat===opt.v?C.accent:C.muted, cursor:"pointer", fontSize:11, transition:"all 0.15s" }}>
+                  {opt.l}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ─── TASK ITEM ─────────────────────────────────────────────────────────────
+  function TaskItem({ task, onToggle, onRemove, onSchedule, accent }) {
+    const hasTime = task.timeStart;
+    const hasDate = task.date;
+    return (
+      <div style={{ display:"flex", alignItems:"flex-start", gap:8, padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
+        <button onClick={onToggle} style={{ width:18,height:18,borderRadius:"50%",flexShrink:0,cursor:"pointer",border:`1.5px solid ${task.done?(accent||C.accent):C.border2}`,background:task.done?(accent||C.accent):"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.15s",marginTop:2 }}>
+          {task.done && <span style={{ color:"#fff",fontSize:9,fontWeight:700 }}>✓</span>}
+        </button>
+        <div style={{ flex:1, minWidth:0 }}>
+          <span style={{ fontSize:13,color:task.done?C.muted:C.text,textDecoration:task.done?"line-through":"none",transition:"all 0.15s",display:"block" }}>
+            {task.carry&&!task.done && <span style={{ fontSize:10,color:C.amber,marginRight:4 }}>↩</span>}
+            {task.text}
+          </span>
+          {(hasDate || hasTime || task.repeat==="daily") && (
+            <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:3, flexWrap:"wrap" }}>
+              {task.repeat==="daily" && <span style={{ fontSize:9, padding:"1px 5px", borderRadius:99, background:"rgba(139,92,246,0.12)", color:C.accent, border:`1px solid rgba(139,92,246,0.2)` }}>🔁 diario</span>}
+              {hasDate && task.repeat!=="daily" && <span style={{ fontSize:10, color:C.muted }}>{formatDateShort(task.date)}</span>}
+              {hasTime && <span style={{ fontSize:10, color:accent||C.accent }}>{formatTime12(task.timeStart)}{task.timeEnd?" – "+formatTime12(task.timeEnd):""}</span>}
+            </div>
+          )}
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:2, flexShrink:0 }}>
+          <button onClick={onSchedule} title="Programar" style={{ background:"transparent",border:"none",cursor:"pointer",color:hasTime||hasDate?accent||C.accent:C.muted,fontSize:12,lineHeight:1,padding:"2px 3px",opacity:hasTime||hasDate?1:0.5 }}>🕐</button>
+          <button onClick={onRemove} style={{ background:"transparent",border:"none",cursor:"pointer",color:C.muted,fontSize:15,lineHeight:1,padding:"0 2px" }}>×</button>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── RADAR CHART ──────────────────────────────────────────────────────────
   function RadarChart({ habits, logs, size=220 }) {
     const cx=size/2, cy=size/2, r=size*0.37, n=habits.length;
     if (n < 3) return null;
@@ -141,6 +333,7 @@
     );
   }
 
+  // ─── HABIT INPUT ──────────────────────────────────────────────────────────
   function HabitInput({ onAdd, onCancel }) {
     const [val, setVal] = useState("");
     const ref = useRef(null);
@@ -157,178 +350,285 @@
     );
   }
 
-  function TaskItem({ task, onToggle, onRemove, accent }) {
+  // ─── CALENDAR VIEW ────────────────────────────────────────────────────────
+  function CalendarView({ state, getClientTasks, toggleClientTask, togglePersonalTask }) {
+    const [calDate, setCalDate] = useState(new Date());
+
+    // Get week days (Mon-Sun) for the current week
+    const getWeekDays = (d) => {
+      const start = new Date(d);
+      const day = start.getDay();
+      const diff = day === 0 ? -6 : 1 - day; // Monday start
+      start.setDate(start.getDate() + diff);
+      return Array.from({length:7}, (_,i) => {
+        const dd = new Date(start);
+        dd.setDate(start.getDate() + i);
+        return dd;
+      });
+    };
+
+    const weekDays = getWeekDays(calDate);
+    const weekDayLabels = ["LUN","MAR","MIÉ","JUE","VIE","SÁB","DOM"];
+
+    const prevWeek = () => { const d=new Date(calDate); d.setDate(d.getDate()-7); setCalDate(d); };
+    const nextWeek = () => { const d=new Date(calDate); d.setDate(d.getDate()+7); setCalDate(d); };
+    const goToday = () => setCalDate(new Date());
+
+    // Collect all tasks with time info
+    const allScheduledTasks = useMemo(() => {
+      const tasks = [];
+      state.clients.forEach(client => {
+        (state.clientTasks[client.id]||[]).forEach(t => {
+          if (t.timeStart || t.repeat === "daily") {
+            tasks.push({ ...t, source:"client", clientId:client.id, clientName:client.name, color:client.color });
+          }
+        });
+      });
+      state.personalTasks.forEach(t => {
+        if (t.timeStart || t.repeat === "daily") {
+          tasks.push({ ...t, source:"personal", color:C.accent, clientName:"Personal" });
+        }
+      });
+      return tasks;
+    }, [state]);
+
+    // Get tasks for a specific day
+    const getTasksForDay = (dayDate) => {
+      const dk = dayDate.toISOString().slice(0,10);
+      return allScheduledTasks.filter(t => {
+        if (t.repeat === "daily") return true; // show every day
+        return t.date === dk;
+      });
+    };
+
+    // Hours to show: 4am to 11pm
+    const START_HOUR = 4;
+    const END_HOUR = 23;
+    const TOTAL_HOURS = END_HOUR - START_HOUR;
+    const HOUR_HEIGHT = 60; // px per hour
+    const TOTAL_HEIGHT = TOTAL_HOURS * HOUR_HEIGHT;
+    const COL_WIDTH = 110;
+
+    const now = new Date();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const nowOffset = (nowMinutes - START_HOUR * 60) / 60 * HOUR_HEIGHT;
+
+    const todayStr = todayKey();
+
     return (
-      <div style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
-        <button onClick={onToggle} style={{ width:18,height:18,borderRadius:"50%",flexShrink:0,cursor:"pointer",border:`1.5px solid ${task.done?(accent||C.accent):C.border2}`,background:task.done?(accent||C.accent):"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.15s" }}>
-          {task.done && <span style={{ color:"#fff",fontSize:9,fontWeight:700 }}>✓</span>}
-        </button>
-        <span style={{ fontSize:13,color:task.done?C.muted:C.text,flex:1,textDecoration:task.done?"line-through":"none",transition:"all 0.15s" }}>
-          {task.carry&&!task.done && <span style={{ fontSize:10,color:C.amber,marginRight:4 }}>↩</span>}
-          {task.text}
-        </span>
-        <button onClick={onRemove} style={{ background:"transparent",border:"none",cursor:"pointer",color:C.muted,fontSize:15,lineHeight:1,padding:"0 2px" }}>×</button>
+      <div className="slide-in">
+        {/* Calendar header nav */}
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+          <button onClick={prevWeek} style={{ ...btnG, padding:"5px 10px" }}>‹</button>
+          <button onClick={goToday} style={{ ...btnG, padding:"5px 12px", fontSize:12 }}>Hoy</button>
+          <button onClick={nextWeek} style={{ ...btnG, padding:"5px 10px" }}>›</button>
+          <span style={{ fontSize:13, color:C.text, fontWeight:600 }}>
+            {weekDays[0].toLocaleDateString("es-PE",{day:"numeric",month:"short"})} – {weekDays[6].toLocaleDateString("es-PE",{day:"numeric",month:"short",year:"numeric"})}
+          </span>
+        </div>
+
+        {/* Calendar grid */}
+        <div style={{ display:"flex", background:C.surface, border:`1px solid ${C.border}`, borderRadius:12, overflow:"hidden" }}>
+          {/* Time gutter */}
+          <div style={{ width:52, flexShrink:0, borderRight:`1px solid ${C.border}` }}>
+            <div style={{ height:40, borderBottom:`1px solid ${C.border}` }}/> {/* header spacer */}
+            <div style={{ position:"relative", height:TOTAL_HEIGHT }}>
+              {Array.from({length:TOTAL_HOURS+1}, (_,i) => (
+                <div key={i} style={{ position:"absolute", top: i * HOUR_HEIGHT - 7, left:0, right:0, textAlign:"right", paddingRight:8, fontSize:10, color:C.muted, userSelect:"none" }}>
+                  {i+START_HOUR < 12 ? `${i+START_HOUR} AM` : i+START_HOUR === 12 ? "12 PM" : `${i+START_HOUR-12} PM`}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Days */}
+          <div style={{ flex:1, overflowX:"auto", display:"flex" }}>
+            {weekDays.map((day, di) => {
+              const dk = day.toISOString().slice(0,10);
+              const isToday = dk === todayStr;
+              const dayTasks = getTasksForDay(day);
+
+              return (
+                <div key={di} style={{ flex:1, minWidth:COL_WIDTH, borderRight: di<6?`1px solid ${C.border}`:"none" }}>
+                  {/* Day header */}
+                  <div style={{ height:40, borderBottom:`1px solid ${C.border}`, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:1 }}>
+                    <div style={{ fontSize:9, color:isToday?C.accent:C.muted, fontWeight:700, letterSpacing:"0.06em" }}>{weekDayLabels[di]}</div>
+                    <div style={{ fontSize:15, fontWeight:700, color:isToday?C.accent:C.text, width:26, height:26, display:"flex", alignItems:"center", justifyContent:"center", borderRadius:"50%", background:isToday?C.accentDim:"transparent" }}>
+                      {day.getDate()}
+                    </div>
+                  </div>
+
+                  {/* Events area */}
+                  <div style={{ position:"relative", height:TOTAL_HEIGHT }}>
+                    {/* Hour grid lines */}
+                    {Array.from({length:TOTAL_HOURS}, (_,i) => (
+                      <div key={i} style={{ position:"absolute", top: i * HOUR_HEIGHT, left:0, right:0, borderTop:`1px solid ${C.border}`, opacity:0.4 }}/>
+                    ))}
+                    {/* Half hour lines */}
+                    {Array.from({length:TOTAL_HOURS}, (_,i) => (
+                      <div key={"h"+i} style={{ position:"absolute", top: i * HOUR_HEIGHT + HOUR_HEIGHT/2, left:0, right:0, borderTop:`1px dashed ${C.border}`, opacity:0.2 }}/>
+                    ))}
+
+                    {/* Current time line */}
+                    {isToday && nowOffset >= 0 && nowOffset <= TOTAL_HEIGHT && (
+                      <div style={{ position:"absolute", top: nowOffset, left:0, right:0, zIndex:10, display:"flex", alignItems:"center" }}>
+                        <div style={{ width:7, height:7, borderRadius:"50%", background:C.red, flexShrink:0, marginLeft:-3 }}/>
+                        <div style={{ flex:1, height:1, background:C.red }}/>
+                      </div>
+                    )}
+
+                    {/* Tasks */}
+                    {dayTasks.map((task, ti) => {
+                      const startMin = timeToMinutes(task.timeStart) || (8*60); // default 8am
+                      const endMin = timeToMinutes(task.timeEnd) || (startMin + 60);
+                      const duration = endMin - startMin;
+                      const top = (startMin - START_HOUR*60) / 60 * HOUR_HEIGHT;
+                      const height = Math.max(24, duration / 60 * HOUR_HEIGHT - 2);
+
+                      if (top < 0 || top > TOTAL_HEIGHT) return null;
+
+                      const toggle = task.source==="client"
+                        ? ()=>toggleClientTask(task.clientId, task.id)
+                        : ()=>togglePersonalTask(task.id);
+
+                      return (
+                        <div key={task.id+"_"+di} onClick={toggle}
+                          style={{
+                            position:"absolute", top, left:3, right:3,
+                            height, borderRadius:6,
+                            background:`${task.color}22`,
+                            border:`1.5px solid ${task.color}80`,
+                            borderLeft:`3px solid ${task.color}`,
+                            padding:"3px 5px", cursor:"pointer", overflow:"hidden",
+                            opacity: task.done ? 0.45 : 1,
+                            zIndex: 5,
+                          }}>
+                          <div style={{ fontSize:10, fontWeight:600, color:task.color, lineHeight:1.3, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", textDecoration:task.done?"line-through":"none" }}>
+                            {task.done && "✓ "}{task.text}
+                          </div>
+                          {height > 30 && (
+                            <div style={{ fontSize:9, color:`${task.color}cc`, marginTop:1 }}>
+                              {formatTime12(task.timeStart)}{task.timeEnd?" – "+formatTime12(task.timeEnd):""}
+                              {task.repeat==="daily" && " · 🔁"}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Legend */}
+        <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginTop:10 }}>
+          {state.clients.map(c => (
+            <div key={c.id} style={{ display:"flex", alignItems:"center", gap:4, fontSize:11, color:C.muted }}>
+              <div style={{ width:8, height:8, borderRadius:2, background:c.color }}/>
+              {c.name}
+            </div>
+          ))}
+          <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:11, color:C.muted }}>
+            <div style={{ width:8, height:8, borderRadius:2, background:C.accent }}/>
+            Personal
+          </div>
+        </div>
       </div>
     );
   }
 
-  function AddTaskInline({ onAdd, accent }) {
-    const [val, setVal] = useState("");
-    const [open, setOpen] = useState(false);
-    const ref = useRef(null);
-    useEffect(() => { if (open) ref.current?.focus({ preventScroll:true }); }, [open]);
-    const submit = () => { if (!val.trim()) return; onAdd(val.trim()); setVal(""); setOpen(false); };
-    if (!open) return <button onClick={()=>setOpen(true)} style={{ display:"flex",alignItems:"center",gap:4,marginTop:6,fontSize:12,color:accent||C.accent,background:"transparent",border:"none",cursor:"pointer" }}>＋ Agregar tarea</button>;
-    return (
-      <div style={{ display:"flex",gap:6,marginTop:8 }}>
-        <input ref={ref} value={val} onChange={e=>setVal(e.target.value)} placeholder="Nueva tarea..."
-          onKeyDown={e=>{ if(e.key==="Enter") submit(); if(e.key==="Escape") setOpen(false); }}
-          style={{ ...inp, flex:1 }} />
-        <button onClick={submit} style={{ ...btnA, background:accent||C.accent }}>✓</button>
-        <button onClick={()=>setOpen(false)} style={btnG}>✕</button>
-      </div>
-    );
-  }
-
-  // ─── PRIORITY VIEW ─────────────────────────────────────────────────────────
-  function PriorityView({ state, update, getClientTasks, toggleClientTask, removeClientTask, togglePersonalTask, removePersonalTask }) {
+  // ─── PRIORITY VIEW ────────────────────────────────────────────────────────
+  function PriorityView({ state, update, getClientTasks, toggleClientTask, removeClientTask, togglePersonalTask, removePersonalTask, scheduleTask }) {
     const dragItem = useRef(null);
     const dragOverItem = useRef(null);
     const [draggingId, setDraggingId] = useState(null);
     const [overIdx, setOverIdx] = useState(null);
 
-    // Build flat list of all tasks with source info
     const allTasks = [];
     state.clients.forEach(client => {
       getClientTasks(client.id).forEach(task => {
-        allTasks.push({ ...task, source: "client", clientId: client.id, clientName: client.name, clientColor: client.color, uid: `${client.id}__${task.id}` });
+        allTasks.push({ ...task, source:"client", clientId:client.id, clientName:client.name, clientColor:client.color, uid:`${client.id}__${task.id}` });
       });
     });
     state.personalTasks.forEach(task => {
-      allTasks.push({ ...task, source: "personal", uid: `personal__${task.id}` });
+      allTasks.push({ ...task, source:"personal", uid:`personal__${task.id}` });
     });
 
-    // Apply priorityOrder: ordered first, then rest appended
     const order = state.priorityOrder || [];
     const orderedUids = order.filter(uid => allTasks.find(t => t.uid === uid));
     const unorderedTasks = allTasks.filter(t => !orderedUids.includes(t.uid));
     const finalUids = [...orderedUids, ...unorderedTasks.map(t => t.uid)];
     const sortedTasks = finalUids.map(uid => allTasks.find(t => t.uid === uid)).filter(Boolean);
-
     const pendingTasks = sortedTasks.filter(t => !t.done);
     const doneTasks = sortedTasks.filter(t => t.done);
 
-    const handleDragStart = (e, idx, uid) => {
-      dragItem.current = idx;
-      setDraggingId(uid);
-      e.dataTransfer.effectAllowed = "move";
-    };
-    const handleDragEnter = (e, idx) => {
-      dragOverItem.current = idx;
-      setOverIdx(idx);
-    };
+    const handleDragStart = (e, idx, uid) => { dragItem.current=idx; setDraggingId(uid); e.dataTransfer.effectAllowed="move"; };
+    const handleDragEnter = (e, idx) => { dragOverItem.current=idx; setOverIdx(idx); };
     const handleDragEnd = () => {
-      const from = dragItem.current;
-      const to = dragOverItem.current;
-      if (from === null || to === null || from === to) {
-        dragItem.current = null; dragOverItem.current = null;
-        setDraggingId(null); setOverIdx(null);
-        return;
-      }
-      const newOrder = [...finalUids];
-      const [moved] = newOrder.splice(from, 1);
-      newOrder.splice(to, 0, moved);
-      update(prev => ({ ...prev, priorityOrder: newOrder }));
-      dragItem.current = null; dragOverItem.current = null;
-      setDraggingId(null); setOverIdx(null);
+      const from=dragItem.current, to=dragOverItem.current;
+      if (from===null||to===null||from===to) { dragItem.current=null; dragOverItem.current=null; setDraggingId(null); setOverIdx(null); return; }
+      const newOrder=[...finalUids]; const [moved]=newOrder.splice(from,1); newOrder.splice(to,0,moved);
+      update(prev=>({...prev,priorityOrder:newOrder}));
+      dragItem.current=null; dragOverItem.current=null; setDraggingId(null); setOverIdx(null);
     };
 
-    const getToggle = (t) => t.source === "client"
-      ? () => toggleClientTask(t.clientId, t.id)
-      : () => togglePersonalTask(t.id);
-    const getRemove = (t) => t.source === "client"
-      ? () => removeClientTask(t.clientId, t.id)
-      : () => removePersonalTask(t.id);
-
-    const donePct = sortedTasks.length ? Math.round(doneTasks.length / sortedTasks.length * 100) : 0;
+    const getToggle = (t) => t.source==="client" ? ()=>toggleClientTask(t.clientId,t.id) : ()=>togglePersonalTask(t.id);
+    const getRemove = (t) => t.source==="client" ? ()=>removeClientTask(t.clientId,t.id) : ()=>removePersonalTask(t.id);
+    const donePct = sortedTasks.length ? Math.round(doneTasks.length/sortedTasks.length*100) : 0;
 
     return (
       <div className="slide-in">
-        {/* Header stats */}
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
           <div style={{ flex:1, height:5, background:C.surface2, borderRadius:99, overflow:"hidden" }}>
             <div style={{ width:`${donePct}%`, height:"100%", background:donePct===100?C.green:C.accent, borderRadius:99, transition:"width 0.4s" }}/>
           </div>
           <span style={{ fontSize:11, color:C.muted, flexShrink:0 }}>{doneTasks.length}/{sortedTasks.length} completadas</span>
         </div>
-
-        {/* Instructions */}
         <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px", marginBottom:12, background:"rgba(139,92,246,0.06)", borderRadius:8, border:`1px solid rgba(139,92,246,0.15)` }}>
           <span style={{ fontSize:16 }}>⠿</span>
-          <span style={{ fontSize:11, color:C.muted2, lineHeight:1.5 }}>Arrastra las tarjetas para ordenar por prioridad. Las de arriba = primero hoy.</span>
+          <span style={{ fontSize:11, color:C.muted2, lineHeight:1.5 }}>Arrastra para priorizar. Haz clic en 🕐 para programar fecha y hora.</span>
         </div>
 
-        {/* Pending draggable list */}
-        {pendingTasks.length === 0 && (
-          <div style={{ textAlign:"center", padding:"32px 0", color:C.muted, fontSize:13 }}>
-            🎉 Todas las tareas completadas
-          </div>
-        )}
+        {pendingTasks.length === 0 && <div style={{ textAlign:"center", padding:"32px 0", color:C.muted, fontSize:13 }}>🎉 Todas las tareas completadas</div>}
 
         {pendingTasks.map((task, i) => {
           const globalIdx = finalUids.indexOf(task.uid);
           const isDragging = draggingId === task.uid;
           const isOver = overIdx === globalIdx;
-          const color = task.source === "client" ? task.clientColor : C.accent;
+          const color = task.source==="client" ? task.clientColor : C.accent;
+          const hasSchedule = task.timeStart || task.date || task.repeat==="daily";
           return (
-            <div
-              key={task.uid}
+            <div key={task.uid}
               className={`drag-item${isDragging?" dragging":""}${isOver&&!isDragging?" drag-over":""}`}
-              draggable
-              onDragStart={e => handleDragStart(e, globalIdx, task.uid)}
-              onDragEnter={e => handleDragEnter(e, globalIdx)}
-              onDragOver={e => e.preventDefault()}
-              onDragEnd={handleDragEnd}
-              style={{
-                display:"flex", alignItems:"center", gap:10,
-                padding:"10px 12px", marginBottom:5, borderRadius:9,
-                background:C.surface, border:`1px solid ${isDragging?"rgba(139,92,246,0.4)":C.border}`,
-                cursor:"grab", userSelect:"none",
-                borderLeft:`3px solid ${color}`,
-              }}
-            >
-              {/* Rank badge */}
+              draggable onDragStart={e=>handleDragStart(e,globalIdx,task.uid)}
+              onDragEnter={e=>handleDragEnter(e,globalIdx)} onDragOver={e=>e.preventDefault()} onDragEnd={handleDragEnd}
+              style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", marginBottom:5, borderRadius:9, background:C.surface, border:`1px solid ${isDragging?"rgba(139,92,246,0.4)":C.border}`, cursor:"grab", userSelect:"none", borderLeft:`3px solid ${color}` }}>
               <div style={{ width:22, height:22, borderRadius:6, background:i===0?"rgba(139,92,246,0.2)":C.surface2, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, border:`1px solid ${i===0?"rgba(139,92,246,0.4)":C.border}` }}>
                 <span style={{ fontSize:10, fontWeight:700, color:i===0?C.accent:C.muted }}>{i+1}</span>
               </div>
-
-              {/* Drag handle */}
               <span style={{ fontSize:13, color:C.border2, flexShrink:0, cursor:"grab", letterSpacing:"-1px" }}>⠿</span>
-
-              {/* Check */}
-              <button onClick={getToggle(task)} style={{ width:18,height:18,borderRadius:"50%",flexShrink:0,cursor:"pointer",border:`1.5px solid ${C.border2}`,background:"transparent",display:"flex",alignItems:"center",justifyContent:"center" }}>
-              </button>
-
-              {/* Text */}
+              <button onClick={getToggle(task)} style={{ width:18,height:18,borderRadius:"50%",flexShrink:0,cursor:"pointer",border:`1.5px solid ${C.border2}`,background:"transparent",display:"flex",alignItems:"center",justifyContent:"center" }}/>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:13, color:C.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{task.text}</div>
-                <div style={{ fontSize:10, color:color, marginTop:1 }}>
-                  {task.source === "client" ? task.clientName : "👤 Personal"}
+                <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:2, flexWrap:"wrap" }}>
+                  <span style={{ fontSize:10, color:color }}>{task.source==="client"?task.clientName:"👤 Personal"}</span>
+                  {task.repeat==="daily" && <span style={{ fontSize:9, padding:"1px 5px", borderRadius:99, background:"rgba(139,92,246,0.1)", color:C.accent }}>🔁 diario</span>}
+                  {task.date && task.repeat!=="daily" && <span style={{ fontSize:10, color:C.muted }}>{formatDateShort(task.date)}</span>}
+                  {task.timeStart && <span style={{ fontSize:10, color:color }}>{formatTime12(task.timeStart)}{task.timeEnd?" – "+formatTime12(task.timeEnd):""}</span>}
                 </div>
               </div>
-
-              {/* Complete btn */}
-              <button onClick={getToggle(task)} style={{ padding:"3px 10px", borderRadius:6, border:`1px solid ${C.border}`, background:"transparent", color:C.muted, cursor:"pointer", fontSize:11, flexShrink:0, whiteSpace:"nowrap" }}>
-                Hecho
+              <button onClick={()=>scheduleTask(task)} title="Programar horario"
+                style={{ padding:"4px 8px", borderRadius:7, border:`1px solid ${hasSchedule?color:C.border}`, background:hasSchedule?`${color}15`:"transparent", color:hasSchedule?color:C.muted, cursor:"pointer", fontSize:11, flexShrink:0, whiteSpace:"nowrap" }}>
+                {hasSchedule?"🕐 editar":"🕐 hora"}
               </button>
-
-              {/* Remove */}
+              <button onClick={getToggle(task)} style={{ padding:"3px 10px", borderRadius:6, border:`1px solid ${C.border}`, background:"transparent", color:C.muted, cursor:"pointer", fontSize:11, flexShrink:0 }}>Hecho</button>
               <button onClick={getRemove(task)} style={{ background:"transparent",border:"none",cursor:"pointer",color:C.muted,fontSize:15,padding:"0 2px",flexShrink:0 }}>×</button>
             </div>
           );
         })}
 
-        {/* Done section */}
         {doneTasks.length > 0 && (
           <div style={{ marginTop:16 }}>
             <div style={{ fontSize:10, fontWeight:700, letterSpacing:"0.1em", textTransform:"uppercase", color:C.muted, marginBottom:8, display:"flex", alignItems:"center", gap:8 }}>
@@ -336,7 +636,7 @@
               <div style={{ flex:1, height:1, background:C.border }}/>
             </div>
             {doneTasks.map(task => {
-              const color = task.source === "client" ? task.clientColor : C.accent;
+              const color = task.source==="client" ? task.clientColor : C.accent;
               return (
                 <div key={task.uid} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 12px", marginBottom:4, borderRadius:9, background:"transparent", border:`1px solid ${C.border}`, borderLeft:`3px solid ${color}30`, opacity:0.55 }}>
                   <button onClick={getToggle(task)} style={{ width:18,height:18,borderRadius:"50%",flexShrink:0,cursor:"pointer",border:`1.5px solid ${color}`,background:color,display:"flex",alignItems:"center",justifyContent:"center" }}>
@@ -344,9 +644,7 @@
                   </button>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:13, color:C.muted, textDecoration:"line-through", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{task.text}</div>
-                    <div style={{ fontSize:10, color:`${color}80`, marginTop:1 }}>
-                      {task.source === "client" ? task.clientName : "👤 Personal"}
-                    </div>
+                    <div style={{ fontSize:10, color:`${color}80`, marginTop:1 }}>{task.source==="client"?task.clientName:"👤 Personal"}</div>
                   </div>
                   <button onClick={getRemove(task)} style={{ background:"transparent",border:"none",cursor:"pointer",color:C.muted,fontSize:15,padding:"0 2px" }}>×</button>
                 </div>
@@ -358,11 +656,11 @@
     );
   }
 
-  // ─── MAIN APP ──────────────────────────────────────────────────────────────
+  // ─── MAIN APP ─────────────────────────────────────────────────────────────
   function App() {
     const [state, setState] = useState(load);
     const [tab, setTab] = useState("today");
-    const [taskView, setTaskView] = useState("clients"); // "clients" | "priority"
+    const [taskView, setTaskView] = useState("clients"); // "clients" | "priority" | "calendar"
     const [oodaOpen, setOodaOpen] = useState(false);
     const [addingHabit, setAddingHabit] = useState(false);
     const [editingObj, setEditingObj] = useState(false);
@@ -371,6 +669,7 @@
     const [tempMicro, setTempMicro] = useState({ label:"", goal:"", earned:"" });
     const [newClientName, setNewClientName] = useState("");
     const [addingClient, setAddingClient] = useState(false);
+    const [scheduleModalTask, setScheduleModalTask] = useState(null); // {task, source, clientId?}
     const addClientRef = useRef(null);
     useEffect(() => { if (addingClient) addClientRef.current?.focus({ preventScroll:true }); }, [addingClient]);
 
@@ -382,13 +681,18 @@
       ...prev,
       dailyLogs: { ...prev.dailyLogs, [tk]: { ...(prev.dailyLogs[tk]||{done:[],ooda:{},reflect1:"",reflect2:""}), ...patch } }
     }));
-
     const toggleHabit = id => updateLog({ done: log.done.includes(id) ? log.done.filter(x=>x!==id) : [...log.done, id] });
 
     const getClientTasks = id => state.clientTasks[id] || [];
-    const addClientTask = (cid, text) => update(prev => ({ ...prev, clientTasks: { ...prev.clientTasks, [cid]: [...(prev.clientTasks[cid]||[]), {id:Date.now(),text,done:false,carry:false}] } }));
+
+    const addClientTask = (cid, text, schedule={}) => update(prev => ({
+      ...prev,
+      clientTasks: { ...prev.clientTasks, [cid]: [...(prev.clientTasks[cid]||[]), {id:Date.now(), text, done:false, carry:false, ...schedule}] }
+    }));
     const toggleClientTask = (cid, tid) => update(prev => ({ ...prev, clientTasks: { ...prev.clientTasks, [cid]: (prev.clientTasks[cid]||[]).map(t=>t.id===tid?{...t,done:!t.done}:t) } }));
     const removeClientTask = (cid, tid) => update(prev => ({ ...prev, clientTasks: { ...prev.clientTasks, [cid]: (prev.clientTasks[cid]||[]).filter(t=>t.id!==tid) } }));
+    const updateClientTask = (cid, tid, patch) => update(prev => ({ ...prev, clientTasks: { ...prev.clientTasks, [cid]: (prev.clientTasks[cid]||[]).map(t=>t.id===tid?{...t,...patch}:t) } }));
+
     const addClient = () => {
       if (!newClientName.trim()) return;
       const colors = ["#f59e0b","#06b6d4","#8b5cf6","#22c55e","#ef4444","#f97316","#ec4899"];
@@ -396,9 +700,21 @@
       setNewClientName(""); setAddingClient(false);
     };
     const removeClient = id => update(prev => { const ct={...prev.clientTasks}; delete ct[id]; return {...prev, clients:prev.clients.filter(c=>c.id!==id), clientTasks:ct}; });
-    const addPersonalTask = text => update(prev => ({ ...prev, personalTasks: [...prev.personalTasks, {id:Date.now(),text,done:false,carry:false}] }));
+
+    const addPersonalTask = (text, schedule={}) => update(prev => ({ ...prev, personalTasks: [...prev.personalTasks, {id:Date.now(), text, done:false, carry:false, ...schedule}] }));
     const togglePersonalTask = id => update(prev => ({ ...prev, personalTasks: prev.personalTasks.map(t=>t.id===id?{...t,done:!t.done}:t) }));
     const removePersonalTask = id => update(prev => ({ ...prev, personalTasks: prev.personalTasks.filter(t=>t.id!==id) }));
+    const updatePersonalTask = (id, patch) => update(prev => ({ ...prev, personalTasks: prev.personalTasks.map(t=>t.id===id?{...t,...patch}:t) }));
+
+    // Schedule modal handler
+    const openScheduleModal = (task) => setScheduleModalTask(task);
+    const saveSchedule = (patch) => {
+      if (!scheduleModalTask) return;
+      const t = scheduleModalTask;
+      if (t.source === "client") updateClientTask(t.clientId, t.id, patch);
+      else updatePersonalTask(t.id, patch);
+      setScheduleModalTask(null);
+    };
 
     const doneCount = log.done.length;
     const totalH = state.habits.length;
@@ -408,21 +724,18 @@
     const doneTasks = state.clients.reduce((s,c)=>s+getClientTasks(c.id).filter(t=>t.done).length,0) + state.personalTasks.filter(t=>t.done).length;
 
     const navItems = [
-      { id:"today",   icon:"◈", label:"Hoy",      badge: `${pct}%` },
-      { id:"tasks",   icon:"◧", label:"Tareas",   badge: totalTasks>0?`${doneTasks}/${totalTasks}`:null },
-      { id:"progress",icon:"◆", label:"Progreso", badge: null },
-      { id:"settings",icon:"◎", label:"Config",   badge: null },
+      { id:"today",    icon:"◈", label:"Hoy",      badge:`${pct}%` },
+      { id:"tasks",    icon:"◧", label:"Tareas",   badge:totalTasks>0?`${doneTasks}/${totalTasks}`:null },
+      { id:"progress", icon:"◆", label:"Progreso", badge:null },
+      { id:"settings", icon:"◎", label:"Config",   badge:null },
     ];
 
     const Sidebar = () => (
       <div id="sidebar" style={{ width:200, flexShrink:0, background:C.sidebar, borderRight:`1px solid ${C.border}`, display:"flex", flexDirection:"column", height:"100vh", padding:"20px 12px", gap:0, overflow:"hidden" }}>
         <div id="sidebar-logo" style={{ marginBottom:24, paddingLeft:8 }}>
           <div style={{ fontSize:15, fontWeight:700, color:C.text, letterSpacing:"0.04em" }}>MI SISTEMA</div>
-          <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>
-            {new Date().toLocaleDateString("es-PE",{weekday:"short",day:"numeric",month:"short"}).toUpperCase()}
-          </div>
+          <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>{new Date().toLocaleDateString("es-PE",{weekday:"short",day:"numeric",month:"short"}).toUpperCase()}</div>
         </div>
-
         <div style={{ background:C.surface, border:`1px solid ${C.border}`, borderRadius:9, padding:"10px 12px", marginBottom:16 }}>
           <div style={{ fontSize:10, color:C.muted, marginBottom:4, fontWeight:600, letterSpacing:"0.06em", textTransform:"uppercase" }}>Microobjetivo</div>
           <div style={{ fontSize:18, fontWeight:700, color:C.cyan, letterSpacing:"-0.02em", marginBottom:6 }}>${state.micro.earned.toLocaleString()}</div>
@@ -434,7 +747,6 @@
             <span>${(state.micro.goal-state.micro.earned).toLocaleString()} restante</span>
           </div>
         </div>
-
         <div style={{ background:C.surface, border:`1px solid ${C.border}`, borderRadius:9, padding:"10px 12px", marginBottom:16 }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
             <div style={{ fontSize:10, color:C.muted, fontWeight:600, letterSpacing:"0.06em", textTransform:"uppercase" }}>Hábitos hoy</div>
@@ -447,30 +759,22 @@
             {state.habits.map(h => {
               const done = log.done.includes(h.id);
               return (
-                <button key={h.id} onClick={()=>toggleHabit(h.id)} title={h.name}
-                  style={{ width:28, height:28, borderRadius:7, border:`1px solid ${done?"rgba(139,92,246,0.5)":C.border}`, background:done?C.accentDim:"transparent", cursor:"pointer", fontSize:14, display:"flex", alignItems:"center", justifyContent:"center", transition:"all 0.15s" }}>
+                <button key={h.id} onClick={()=>toggleHabit(h.id)} title={h.name} style={{ width:28,height:28,borderRadius:7,border:`1px solid ${done?"rgba(139,92,246,0.5)":C.border}`,background:done?C.accentDim:"transparent",cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.15s" }}>
                   {h.icon}
                 </button>
               );
             })}
           </div>
         </div>
-
         <div id="sidebar-nav" style={{ display:"flex", flexDirection:"column", gap:2 }}>
           {navItems.map(n => (
-            <button key={n.id} onClick={()=>setTab(n.id)} style={{
-              display:"flex", alignItems:"center", gap:9, padding:"9px 10px", borderRadius:8,
-              border:"none", cursor:"pointer", textAlign:"left", transition:"all 0.15s",
-              background: tab===n.id ? C.accentDim : "transparent",
-              color: tab===n.id ? C.accent : C.muted2,
-            }}>
+            <button key={n.id} onClick={()=>setTab(n.id)} style={{ display:"flex",alignItems:"center",gap:9,padding:"9px 10px",borderRadius:8,border:"none",cursor:"pointer",textAlign:"left",transition:"all 0.15s",background:tab===n.id?C.accentDim:"transparent",color:tab===n.id?C.accent:C.muted2 }}>
               <span style={{ fontSize:13 }}>{n.icon}</span>
-              <span style={{ fontSize:13, fontWeight: tab===n.id?600:400, flex:1 }}>{n.label}</span>
-              {n.badge && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:99, background:tab===n.id?C.accentDim:C.surface2, color:tab===n.id?C.accent:C.muted }}>{n.badge}</span>}
+              <span style={{ fontSize:13,fontWeight:tab===n.id?600:400,flex:1 }}>{n.label}</span>
+              {n.badge && <span style={{ fontSize:10,padding:"1px 6px",borderRadius:99,background:tab===n.id?C.accentDim:C.surface2,color:tab===n.id?C.accent:C.muted }}>{n.badge}</span>}
             </button>
           ))}
         </div>
-
         <div id="sidebar-footer" style={{ marginTop:"auto", paddingTop:16, borderTop:`1px solid ${C.border}` }}>
           <div style={{ fontSize:9, color:C.muted, fontWeight:600, letterSpacing:"0.08em", textTransform:"uppercase", marginBottom:5 }}>Objetivo</div>
           <p style={{ fontSize:11, color:C.muted2, lineHeight:1.5, margin:0 }}>{state.objective}</p>
@@ -485,9 +789,7 @@
             <span style={lbl}>◈ Objetivo largo plazo</span>
             {editingObj ? (
               <div style={{ display:"flex", gap:7 }}>
-                <input value={tempObj} onChange={e=>setTempObj(e.target.value)} autoFocus
-                  onKeyDown={e=>{ if(e.key==="Enter"){ update(p=>({...p,objective:tempObj})); setEditingObj(false); } }}
-                  style={{ ...inp, flex:1 }} />
+                <input value={tempObj} onChange={e=>setTempObj(e.target.value)} autoFocus onKeyDown={e=>{ if(e.key==="Enter"){ update(p=>({...p,objective:tempObj})); setEditingObj(false); } }} style={{ ...inp, flex:1 }} />
                 <button onClick={()=>{ update(p=>({...p,objective:tempObj})); setEditingObj(false); }} style={btnA}>✓</button>
               </div>
             ) : (
@@ -497,7 +799,6 @@
               </div>
             )}
           </div>
-
           <div style={{ ...card(), borderLeft:`2px solid ${C.cyan}` }}>
             <span style={lbl}>◎ Microobjetivo — este mes</span>
             {editingMicro ? (
@@ -530,13 +831,10 @@
                     </div>
                   </div>
                 </div>
-                <div style={{ fontSize:11, color:C.muted }}>
-                  Faltan <strong style={{ color:C.text }}>${(state.micro.goal-state.micro.earned).toLocaleString()}</strong> · {30-new Date().getDate()} días restantes
-                </div>
+                <div style={{ fontSize:11, color:C.muted }}>Faltan <strong style={{ color:C.text }}>${(state.micro.goal-state.micro.earned).toLocaleString()}</strong> · {30-new Date().getDate()} días restantes</div>
               </>
             )}
           </div>
-
           <div style={card()}>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
               <span style={{ ...lbl, marginBottom:0 }}>◆ Hábitos de hoy</span>
@@ -566,7 +864,6 @@
             )}
           </div>
         </div>
-
         <div>
           <div style={card()}>
             <button onClick={()=>setOodaOpen(p=>!p)} style={{ width:"100%",display:"flex",alignItems:"center",justifyContent:"space-between",background:"transparent",border:"none",cursor:"pointer",padding:0 }}>
@@ -574,42 +871,29 @@
                 <span style={lbl}>⟳ OODA — si algo no funciona</span>
                 <p style={{ fontSize:12,color:oodaOpen?C.accent:C.muted,margin:0 }}>{oodaOpen?"Revisando estrategia":"Activar si algo no está funcionando"}</p>
               </div>
-              <span style={{ fontSize:10,padding:"2px 8px",borderRadius:99,background:oodaOpen?C.accentDim:C.surface2,color:oodaOpen?C.accent:C.muted,border:`1px solid ${oodaOpen?C.accent+"40":C.border}`,marginLeft:8,flexShrink:0 }}>
-                {oodaOpen?"Activo":"No hoy"}
-              </span>
+              <span style={{ fontSize:10,padding:"2px 8px",borderRadius:99,background:oodaOpen?C.accentDim:C.surface2,color:oodaOpen?C.accent:C.muted,border:`1px solid ${oodaOpen?C.accent+"40":C.border}`,marginLeft:8,flexShrink:0 }}>{oodaOpen?"Activo":"No hoy"}</span>
             </button>
             {oodaOpen && (
               <div style={{ marginTop:12 }}>
                 <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-                  {[
-                    { key:"observe", tag:"O", title:"Observar", q:"¿Qué está pasando? (hechos)" },
-                    { key:"orient",  tag:"O", title:"Orientar",  q:"¿Por qué está pasando?" },
-                    { key:"decide",  tag:"D", title:"Decidir",   q:"¿Qué voy a cambiar?" },
-                    { key:"act",     tag:"A", title:"Actuar",    q:"Acción concreta mañana" },
-                  ].map(step => (
+                  {[{key:"observe",tag:"O",title:"Observar",q:"¿Qué está pasando? (hechos)"},{key:"orient",tag:"O",title:"Orientar",q:"¿Por qué está pasando?"},{key:"decide",tag:"D",title:"Decidir",q:"¿Qué voy a cambiar?"},{key:"act",tag:"A",title:"Actuar",q:"Acción concreta mañana"}].map(step => (
                     <div key={step.key}>
                       <div style={{ fontSize:9,fontWeight:700,color:C.accent,letterSpacing:"0.1em",marginBottom:3 }}>{step.tag} — {step.title.toUpperCase()}</div>
                       <div style={{ fontSize:10,color:C.muted,marginBottom:4 }}>{step.q}</div>
-                      <textarea value={log.ooda?.[step.key]||""} onChange={e=>updateLog({ooda:{...(log.ooda||{}),[step.key]:e.target.value}})}
-                        placeholder="Escribe..." rows={2} style={{ ...inp, resize:"none", fontSize:12 }}/>
+                      <textarea value={log.ooda?.[step.key]||""} onChange={e=>updateLog({ooda:{...(log.ooda||{}),[step.key]:e.target.value}})} placeholder="Escribe..." rows={2} style={{ ...inp, resize:"none", fontSize:12 }}/>
                     </div>
                   ))}
                 </div>
               </div>
             )}
           </div>
-
           <div style={card()}>
             <span style={lbl}>◉ Reflexión nocturna — 2 min</span>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-              {[
-                { key:"reflect1", q:"¿Lo más importante que hice hoy?" },
-                { key:"reflect2", q:"¿Qué ajusto mañana?" },
-              ].map(f => (
+              {[{key:"reflect1",q:"¿Lo más importante que hice hoy?"},{key:"reflect2",q:"¿Qué ajusto mañana?"}].map(f => (
                 <div key={f.key}>
                   <div style={{ fontSize:11,color:C.muted,marginBottom:4 }}>{f.q}</div>
-                  <textarea value={log[f.key]||""} onChange={e=>updateLog({[f.key]:e.target.value})}
-                    placeholder="Una línea..." rows={3} style={{ ...inp, resize:"none", fontSize:12 }}/>
+                  <textarea value={log[f.key]||""} onChange={e=>updateLog({[f.key]:e.target.value})} placeholder="Una línea..." rows={3} style={{ ...inp, resize:"none", fontSize:12 }}/>
                 </div>
               ))}
             </div>
@@ -618,132 +902,120 @@
       </div>
     );
 
-    const renderTasksTab = () => {
-      return (
-        <div>
-          {/* View Toggle */}
-          <div style={{ display:"flex", gap:6, marginBottom:14 }}>
-            <button
-              onClick={()=>setTaskView("clients")}
-              style={{ padding:"6px 14px", borderRadius:8, border:`1px solid ${taskView==="clients"?C.accent:C.border}`, background:taskView==="clients"?C.accentDim:"transparent", color:taskView==="clients"?C.accent:C.muted, cursor:"pointer", fontSize:12, fontWeight:taskView==="clients"?600:400, transition:"all 0.15s" }}>
-              ◧ Por cliente
+    const renderTasksTab = () => (
+      <div>
+        {/* View Toggle */}
+        <div style={{ display:"flex", gap:6, marginBottom:14 }}>
+          {[
+            { id:"clients", icon:"◧", label:"Por cliente" },
+            { id:"priority", icon:"⠿", label:"Prioridad", sub:"drag" },
+            { id:"calendar", icon:"📅", label:"Calendario" },
+          ].map(v => (
+            <button key={v.id} onClick={()=>setTaskView(v.id)}
+              style={{ display:"flex", alignItems:"center", gap:5, padding:"6px 14px", borderRadius:8, border:`1px solid ${taskView===v.id?C.accent:C.border}`, background:taskView===v.id?C.accentDim:"transparent", color:taskView===v.id?C.accent:C.muted, cursor:"pointer", fontSize:12, fontWeight:taskView===v.id?600:400, transition:"all 0.15s" }}>
+              <span>{v.icon}</span>
+              <span>{v.label}</span>
+              {v.sub && taskView!==v.id && <span style={{ fontSize:9, padding:"1px 5px", borderRadius:99, background:"rgba(139,92,246,0.15)", color:C.accent, border:`1px solid rgba(139,92,246,0.3)` }}>{v.sub}</span>}
             </button>
-            <button
-              onClick={()=>setTaskView("priority")}
-              style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 14px", borderRadius:8, border:`1px solid ${taskView==="priority"?C.accent:C.border}`, background:taskView==="priority"?C.accentDim:"transparent", color:taskView==="priority"?C.accent:C.muted, cursor:"pointer", fontSize:12, fontWeight:taskView==="priority"?600:400, transition:"all 0.15s" }}>
-              <span>⠿</span> Prioridad del día
-              {taskView!=="priority" && <span style={{ fontSize:9, padding:"1px 5px", borderRadius:99, background:"rgba(139,92,246,0.15)", color:C.accent, border:`1px solid rgba(139,92,246,0.3)` }}>drag</span>}
-            </button>
-          </div>
+          ))}
+        </div>
 
-          {taskView === "priority" ? (
-            <PriorityView
-              state={state}
-              update={update}
-              getClientTasks={getClientTasks}
-              toggleClientTask={toggleClientTask}
-              removeClientTask={removeClientTask}
-              togglePersonalTask={togglePersonalTask}
-              removePersonalTask={removePersonalTask}
-            />
-          ) : (
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, alignItems:"start" }}>
-              {/* LEFT: Preguntas + clientes */}
-              <div>
-                <div style={{ ...card(), borderLeft:`2px solid ${C.amber}`, background:"rgba(245,158,11,0.04)" }}>
-                  <span style={{ ...lbl, color:C.amber }}>🧠 Preguntas antes de empezar</span>
-                  <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
-                    {[
-                      "¿Qué hago solo para convencerme de que estoy trabajando?",
-                      "¿Qué hago solo para perder el tiempo?",
-                      "¿Qué hago solo para verme bien frente al universo?",
-                      "¿Qué producirá más valor para mí o mis clientes?",
-                    ].map((q,i) => (
-                      <div key={i} style={{ display:"flex", gap:8 }}>
-                        <span style={{ fontSize:11,color:C.amber,fontWeight:700,flexShrink:0 }}>{i+1}.</span>
-                        <span style={{ fontSize:12,color:C.text,lineHeight:1.5 }}>{q}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+        {taskView === "calendar" && (
+          <CalendarView state={state} getClientTasks={getClientTasks} toggleClientTask={toggleClientTask} togglePersonalTask={togglePersonalTask}/>
+        )}
 
-                {totalTasks > 0 && (
-                  <div style={card()}>
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:7 }}>
-                      <span style={{ ...lbl, marginBottom:0 }}>◆ Progreso del día</span>
-                      <span style={{ fontSize:11, color:doneTasks===totalTasks?C.green:C.muted }}>{doneTasks}/{totalTasks}</span>
-                    </div>
-                    <div style={{ height:5,background:C.surface2,borderRadius:99,overflow:"hidden" }}>
-                      <div style={{ width:`${Math.round(doneTasks/totalTasks*100)}%`,height:"100%",background:doneTasks===totalTasks?C.green:C.accent,borderRadius:99,transition:"width 0.4s" }}/>
-                    </div>
-                  </div>
-                )}
+        {taskView === "priority" && (
+          <PriorityView state={state} update={update} getClientTasks={getClientTasks}
+            toggleClientTask={toggleClientTask} removeClientTask={removeClientTask}
+            togglePersonalTask={togglePersonalTask} removePersonalTask={removePersonalTask}
+            scheduleTask={openScheduleModal}/>
+        )}
 
-                {state.clients.map(client => {
-                  const tasks = getClientTasks(client.id);
-                  const pending = tasks.filter(t=>!t.done).length;
-                  return (
-                    <div key={client.id} style={{ ...card(), borderLeft:`2px solid ${client.color}` }}>
-                      <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8 }}>
-                        <div style={{ display:"flex",alignItems:"center",gap:7 }}>
-                          <div style={{ width:7,height:7,borderRadius:"50%",background:client.color }}/>
-                          <span style={{ fontSize:13,fontWeight:600,color:C.text }}>{client.name}</span>
-                          {pending>0 && <span style={{ fontSize:10,padding:"1px 6px",borderRadius:99,background:`${client.color}20`,color:client.color,border:`1px solid ${client.color}40` }}>{pending}</span>}
-                          {pending===0&&tasks.length>0 && <span style={{ fontSize:10,color:C.green }}>✓</span>}
-                        </div>
-                        <button onClick={()=>removeClient(client.id)} style={{ background:"transparent",border:"none",cursor:"pointer",color:C.muted,fontSize:14,opacity:0.5 }}>×</button>
-                      </div>
-                      {tasks.length===0 && <p style={{ fontSize:12,color:C.muted,marginBottom:4 }}>Sin tareas</p>}
-                      {tasks.map(t => <TaskItem key={t.id} task={t} accent={client.color} onToggle={()=>toggleClientTask(client.id,t.id)} onRemove={()=>removeClientTask(client.id,t.id)}/>)}
-                      <AddTaskInline onAdd={text=>addClientTask(client.id,text)} accent={client.color}/>
+        {taskView === "clients" && (
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, alignItems:"start" }}>
+            <div>
+              <div style={{ ...card(), borderLeft:`2px solid ${C.amber}`, background:"rgba(245,158,11,0.04)" }}>
+                <span style={{ ...lbl, color:C.amber }}>🧠 Preguntas antes de empezar</span>
+                <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
+                  {["¿Qué hago solo para convencerme de que estoy trabajando?","¿Qué hago solo para perder el tiempo?","¿Qué hago solo para verme bien frente al universo?","¿Qué producirá más valor para mí o mis clientes?"].map((q,i) => (
+                    <div key={i} style={{ display:"flex", gap:8 }}>
+                      <span style={{ fontSize:11,color:C.amber,fontWeight:700,flexShrink:0 }}>{i+1}.</span>
+                      <span style={{ fontSize:12,color:C.text,lineHeight:1.5 }}>{q}</span>
                     </div>
-                  );
-                })}
-
-                <div style={{ ...card(), borderStyle:"dashed" }}>
-                  {addingClient ? (
-                    <div style={{ display:"flex", gap:6 }}>
-                      <input ref={addClientRef} value={newClientName} onChange={e=>setNewClientName(e.target.value)}
-                        placeholder="Nombre del cliente..." onKeyDown={e=>{ if(e.key==="Enter") addClient(); if(e.key==="Escape") setAddingClient(false); }}
-                        style={{ ...inp, flex:1 }}/>
-                      <button onClick={addClient} style={btnA}>✓</button>
-                      <button onClick={()=>setAddingClient(false)} style={btnG}>✕</button>
-                    </div>
-                  ) : (
-                    <button onClick={()=>setAddingClient(true)} style={{ display:"flex",alignItems:"center",gap:5,fontSize:12,color:C.muted,background:"transparent",border:"none",cursor:"pointer",width:"100%",justifyContent:"center" }}>
-                      ＋ Agregar cliente
-                    </button>
-                  )}
+                  ))}
                 </div>
               </div>
-
-              {/* RIGHT: Tareas propias */}
-              <div>
-                <div style={{ ...card(), borderLeft:`2px solid ${C.accent}` }}>
-                  <div style={{ display:"flex",alignItems:"center",gap:8,marginBottom:10 }}>
-                    <span style={{ fontSize:13,fontWeight:600,color:C.text }}>👤 Tareas propias</span>
-                    {state.personalTasks.filter(t=>!t.done).length>0 && (
-                      <span style={{ fontSize:10,padding:"1px 6px",borderRadius:99,background:"rgba(139,92,246,0.12)",color:C.accent,border:`1px solid rgba(139,92,246,0.25)` }}>
-                        {state.personalTasks.filter(t=>!t.done).length} pendientes
-                      </span>
-                    )}
+              {totalTasks > 0 && (
+                <div style={card()}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:7 }}>
+                    <span style={{ ...lbl, marginBottom:0 }}>◆ Progreso del día</span>
+                    <span style={{ fontSize:11, color:doneTasks===totalTasks?C.green:C.muted }}>{doneTasks}/{totalTasks}</span>
                   </div>
-                  {state.personalTasks.length===0 && <p style={{ fontSize:12,color:C.muted,marginBottom:4 }}>Sin tareas personales</p>}
-                  {state.personalTasks.map(t => <TaskItem key={t.id} task={t} accent={C.accent} onToggle={()=>togglePersonalTask(t.id)} onRemove={()=>removePersonalTask(t.id)}/>)}
-                  <AddTaskInline onAdd={addPersonalTask} accent={C.accent}/>
+                  <div style={{ height:5,background:C.surface2,borderRadius:99,overflow:"hidden" }}>
+                    <div style={{ width:`${Math.round(doneTasks/totalTasks*100)}%`,height:"100%",background:doneTasks===totalTasks?C.green:C.accent,borderRadius:99,transition:"width 0.4s" }}/>
+                  </div>
                 </div>
-
-                <div style={{ padding:"12px 14px", background:"rgba(139,92,246,0.05)", borderRadius:9, border:`1px solid rgba(139,92,246,0.12)` }}>
-                  <p style={{ fontSize:12,color:C.muted,margin:0,lineHeight:1.7 }}>
-                    🌙 <strong style={{ color:C.accent }}>Ritual nocturno:</strong> Cada noche revisa esta lista. Completa lo que puedas. Si algo lleva 2+ días sin hacerse, pregúntate si realmente importa.
-                  </p>
-                </div>
+              )}
+              {state.clients.map(client => {
+                const tasks = getClientTasks(client.id);
+                const pending = tasks.filter(t=>!t.done).length;
+                return (
+                  <div key={client.id} style={{ ...card(), borderLeft:`2px solid ${client.color}` }}>
+                    <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8 }}>
+                      <div style={{ display:"flex",alignItems:"center",gap:7 }}>
+                        <div style={{ width:7,height:7,borderRadius:"50%",background:client.color }}/>
+                        <span style={{ fontSize:13,fontWeight:600,color:C.text }}>{client.name}</span>
+                        {pending>0 && <span style={{ fontSize:10,padding:"1px 6px",borderRadius:99,background:`${client.color}20`,color:client.color,border:`1px solid ${client.color}40` }}>{pending}</span>}
+                        {pending===0&&tasks.length>0 && <span style={{ fontSize:10,color:C.green }}>✓</span>}
+                      </div>
+                      <button onClick={()=>removeClient(client.id)} style={{ background:"transparent",border:"none",cursor:"pointer",color:C.muted,fontSize:14,opacity:0.5 }}>×</button>
+                    </div>
+                    {tasks.length===0 && <p style={{ fontSize:12,color:C.muted,marginBottom:4 }}>Sin tareas</p>}
+                    {tasks.map(t => <TaskItem key={t.id} task={t} accent={client.color}
+                      onToggle={()=>toggleClientTask(client.id,t.id)}
+                      onRemove={()=>removeClientTask(client.id,t.id)}
+                      onSchedule={()=>openScheduleModal({...t,source:"client",clientId:client.id})}/>)}
+                    <AddTaskInline onAdd={(text,sch)=>addClientTask(client.id,text,sch)} accent={client.color}/>
+                  </div>
+                );
+              })}
+              <div style={{ ...card(), borderStyle:"dashed" }}>
+                {addingClient ? (
+                  <div style={{ display:"flex", gap:6 }}>
+                    <input ref={addClientRef} value={newClientName} onChange={e=>setNewClientName(e.target.value)}
+                      placeholder="Nombre del cliente..." onKeyDown={e=>{ if(e.key==="Enter") addClient(); if(e.key==="Escape") setAddingClient(false); }}
+                      style={{ ...inp, flex:1 }}/>
+                    <button onClick={addClient} style={btnA}>✓</button>
+                    <button onClick={()=>setAddingClient(false)} style={btnG}>✕</button>
+                  </div>
+                ) : (
+                  <button onClick={()=>setAddingClient(true)} style={{ display:"flex",alignItems:"center",gap:5,fontSize:12,color:C.muted,background:"transparent",border:"none",cursor:"pointer",width:"100%",justifyContent:"center" }}>＋ Agregar cliente</button>
+                )}
               </div>
             </div>
-          )}
-        </div>
-      );
-    };
+            <div>
+              <div style={{ ...card(), borderLeft:`2px solid ${C.accent}` }}>
+                <div style={{ display:"flex",alignItems:"center",gap:8,marginBottom:10 }}>
+                  <span style={{ fontSize:13,fontWeight:600,color:C.text }}>👤 Tareas propias</span>
+                  {state.personalTasks.filter(t=>!t.done).length>0 && (
+                    <span style={{ fontSize:10,padding:"1px 6px",borderRadius:99,background:"rgba(139,92,246,0.12)",color:C.accent,border:`1px solid rgba(139,92,246,0.25)` }}>{state.personalTasks.filter(t=>!t.done).length} pendientes</span>
+                  )}
+                </div>
+                {state.personalTasks.length===0 && <p style={{ fontSize:12,color:C.muted,marginBottom:4 }}>Sin tareas personales</p>}
+                {state.personalTasks.map(t => <TaskItem key={t.id} task={t} accent={C.accent}
+                  onToggle={()=>togglePersonalTask(t.id)}
+                  onRemove={()=>removePersonalTask(t.id)}
+                  onSchedule={()=>openScheduleModal({...t,source:"personal"})}/>)}
+                <AddTaskInline onAdd={(text,sch)=>addPersonalTask(text,sch)} accent={C.accent}/>
+              </div>
+              <div style={{ padding:"12px 14px", background:"rgba(139,92,246,0.05)", borderRadius:9, border:`1px solid rgba(139,92,246,0.12)` }}>
+                <p style={{ fontSize:12,color:C.muted,margin:0,lineHeight:1.7 }}>🌙 <strong style={{ color:C.accent }}>Ritual nocturno:</strong> Cada noche revisa esta lista. Completa lo que puedas. Si algo lleva 2+ días sin hacerse, pregúntate si realmente importa.</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
 
     const renderProgressTab = () => {
       const dayLabels = ["Do","Lu","Ma","Mi","Ju","Vi","Sá"];
@@ -756,15 +1028,10 @@
               <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginTop:10, justifyContent:"center" }}>
                 {state.habits.map(h => {
                   const rate = Math.round(getLast7(state.dailyLogs,h.id).filter(d=>d.done).length/7*100);
-                  return (
-                    <div key={h.id} style={{ display:"flex",alignItems:"center",gap:4,fontSize:11,color:C.muted,background:C.surface2,padding:"2px 7px",borderRadius:99,border:`1px solid ${C.border}` }}>
-                      {h.icon} <span style={{ color:rate>50?C.accent:C.muted }}>{rate}%</span>
-                    </div>
-                  );
+                  return <div key={h.id} style={{ display:"flex",alignItems:"center",gap:4,fontSize:11,color:C.muted,background:C.surface2,padding:"2px 7px",borderRadius:99,border:`1px solid ${C.border}` }}>{h.icon} <span style={{ color:rate>50?C.accent:C.muted }}>{rate}%</span></div>;
                 })}
               </div>
             </div>
-
             <div style={card()}>
               <span style={lbl}>◎ Microobjetivo</span>
               <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10 }}>
@@ -786,7 +1053,6 @@
               </div>
             </div>
           </div>
-
           <div>
             <div style={card()}>
               <span style={lbl}>◆ Detalle por hábito</span>
@@ -820,7 +1086,6 @@
                 );
               })}
             </div>
-
             <div style={card()}>
               <span style={lbl}>◉ Historial de reflexiones</span>
               {Object.entries(state.dailyLogs).filter(([,v])=>v.reflect1||v.reflect2).sort((a,b)=>b[0].localeCompare(a[0])).slice(0,6).map(([k,v]) => (
@@ -858,8 +1123,8 @@
         <div>
           <div style={card()}>
             <span style={lbl}>⚠ Zona peligrosa</span>
-            <p style={{ fontSize:12,color:C.muted,marginBottom:10 }}>Esto borrará todos tus datos guardados: hábitos, tareas, progreso y reflexiones.</p>
-            <button onClick={()=>{ if(window.confirm("¿Resetear todos los datos? Esta acción no se puede deshacer.")){ const d=defaultState(); save(d); setState(d); } }}
+            <p style={{ fontSize:12,color:C.muted,marginBottom:10 }}>Esto borrará todos tus datos guardados.</p>
+            <button onClick={()=>{ if(window.confirm("¿Resetear todos los datos?")){ const d=defaultState(); save(d); setState(d); } }}
               style={{ fontSize:13,padding:"7px 14px",borderRadius:7,border:`1px solid rgba(239,68,68,0.3)`,background:"rgba(239,68,68,0.08)",color:"#ef4444",cursor:"pointer" }}>
               Resetear todos los datos
             </button>
@@ -871,29 +1136,34 @@
     const tabTitles = { today:"Hoy", tasks:"Tareas", progress:"Progreso", settings:"Configuración" };
 
     return (
-      <div id="layout" style={{ display:"flex", height:"100vh", background:C.bg, color:C.text, fontFamily:"'Inter', system-ui, sans-serif" }}>
+      <div id="layout" style={{ display:"flex", height:"100vh", background:C.bg, color:C.text }}>
         <Sidebar/>
         <div id="main" style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
           <div style={{ borderBottom:`1px solid ${C.border}`, padding:"14px 24px", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
             <div>
               <h1 style={{ fontSize:16,fontWeight:600,color:C.text,margin:0 }}>{tabTitles[tab]}</h1>
-              <div style={{ fontSize:11,color:C.muted,marginTop:1 }}>
-                {new Date().toLocaleDateString("es-PE",{weekday:"long",day:"numeric",month:"long",year:"numeric"}).toUpperCase()}
-              </div>
+              <div style={{ fontSize:11,color:C.muted,marginTop:1 }}>{new Date().toLocaleDateString("es-PE",{weekday:"long",day:"numeric",month:"long",year:"numeric"}).toUpperCase()}</div>
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:6 }}>
               <div style={{ width:7,height:7,borderRadius:"50%",background:pct===100?C.green:C.accent,boxShadow:`0 0 7px ${pct===100?C.green:C.accent}` }}/>
               <span style={{ fontSize:11,color:C.muted }}>{pct}% hábitos completados</span>
             </div>
           </div>
-
           <div style={{ flex:1, overflowY:"auto", padding:"16px 24px" }}>
-            {tab==="today" && renderTodayTab()}
-            {tab==="tasks" && renderTasksTab()}
+            {tab==="today"    && renderTodayTab()}
+            {tab==="tasks"    && renderTasksTab()}
             {tab==="progress" && renderProgressTab()}
             {tab==="settings" && renderSettingsTab()}
           </div>
         </div>
+
+        {/* Schedule Modal */}
+        {scheduleModalTask && (
+          <TaskScheduleModal
+            task={scheduleModalTask}
+            onSave={saveSchedule}
+            onClose={()=>setScheduleModalTask(null)}/>
+        )}
       </div>
     );
   }
@@ -902,3 +1172,5 @@
 </script>
 </body>
 </html>
+      
+
